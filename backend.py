@@ -209,11 +209,12 @@ def salvar_regra_completa(d):
 # --- PROCESSAMENTO ENTUBA ---
 def processar_vendas_upload(df):
     REGRAS = carregar_regras_dict()
-    if not REGRAS: return 0,0,["Sem regras. Cadastre na Aba 6."]
+    if not REGRAS: return 0, 0, pd.DataFrame([{'Status': 'Erro Crítico', 'Detalhe': 'Nenhuma regra de comissão cadastrada (Aba 6)'}])
     
-    # Padroniza Excel de entrada
+    # Padroniza Excel
     df.columns = df.columns.str.strip().str.lower()
     
+    # Mapas de Lookup (Cache para performance)
     mapa_tab = {limpar_id(v['id_tabela']): k for k,v in REGRAS.items() if v.get('id_tabela')}
     
     df_u = carregar_usuarios_df()
@@ -228,46 +229,72 @@ def processar_vendas_upload(df):
     except: pcid = 1
     
     session = SessionLocal()
+    # Cache dos IDs existentes para verificar duplicidade rápido
     exist = {x[0] for x in session.query(Lancamento.id_lancamento).all()}
     
-    novos = []; err = []; ncli_obj = []; ign=0; ok=0
+    novos = []; ncli_obj = []; 
+    logs = [] # Lista de logs detalhados
+    ign = 0; ok = 0
     
     for idx, row in df.iterrows():
-        # Busca Tipo
+        linha_excel = idx + 2
+        cliente_nome = str(row.get('cliente', 'Desc.')).strip()
+        
+        # 1. Validação de Produto
         tipo = row.get('tipo_cota')
         if not tipo and 'id_tabela' in row: tipo = mapa_tab.get(limpar_id(row['id_tabela']))
-        if not tipo or tipo not in REGRAS: err.append(f"L{idx+2}: Produto não identificado"); continue
+        
+        if not tipo or tipo not in REGRAS: 
+            logs.append({'Linha': linha_excel, 'Cliente': cliente_nome, 'Status': '❌ Erro', 'Detalhe': 'Produto/Regra não encontrado'})
+            continue
         
         reg = REGRAS[tipo]
         
-        # Busca Pessoas
+        # 2. Validação de Pessoas
         iv = limpar_id(row.get('id_vendedor'))
         ig = limpar_id(row.get('id_gerente'))
-        if iv not in map_u: err.append(f"L{idx+2}: Vendedor ID {iv} não existe"); continue
+        if iv not in map_u: 
+            logs.append({'Linha': linha_excel, 'Cliente': cliente_nome, 'Status': '❌ Erro', 'Detalhe': f'Vendedor ID {iv} inexistente'})
+            continue
         
-        # Busca Cliente
-        cnm = str(row.get('cliente')).strip()
+        # 3. Tratamento Cliente
+        cnm = cliente_nome
         cid_xls = limpar_id(row.get('id_cliente'))
         cid_final = None
         
-        if cid_xls and cid_xls in map_cid: cid_final=cid_xls; cnm=map_cid[cid_xls]
-        elif cnm.lower() in map_cnm: cid_final=map_cnm[cnm.lower()]
+        if cid_xls and cid_xls in map_cid: 
+            cid_final=cid_xls; cnm=map_cid[cid_xls]
+        elif cnm.lower() in map_cnm: 
+            cid_final=map_cnm[cnm.lower()]
         else:
             cid_final = str(pcid)
-            ncli_obj.append(Cliente(id_cliente=cid_final, nome_completo=cnm, obs='Auto'))
+            ncli_obj.append(Cliente(id_cliente=cid_final, nome_completo=cnm, obs='Auto Entuba'))
             map_cnm[cnm.lower()] = cid_final; pcid+=1
-            
+            # Log discreto de criação de cliente
+            # logs.append({'Linha': linha_excel, 'Cliente': cnm, 'Status': 'Info', 'Detalhe': 'Novo cliente cadastrado'})
+
+        # 4. Dados da Venda
         grp = str(row.get('grupo')).replace('.0',''); cta = str(row.get('cota')).replace('.0','')
         idv = f"{reg['admin']}_{grp}_{cta}"
-        dtv = pd.to_datetime(row['data_venda'])
+        
+        try: dtv = pd.to_datetime(row['data_venda'])
+        except: logs.append({'Linha': linha_excel, 'Cliente': cnm, 'Status': '❌ Erro', 'Detalhe': 'Data inválida'}); continue
+
         dc = int(row.get('dia_vencimento', 15))
         sh = 1 if dtv.day >= dc else 0
         vcred = float(row.get('valor_credito', 0))
         
+        # 5. Geração das Parcelas
         pcts = reg['pcts']
+        parcelas_criadas_na_linha = 0
+        
         for i, pct in enumerate(pcts):
             idl = f"{idv}_P{i+1}"
-            if idl in exist: ign+=1; continue
+            
+            if idl in exist: 
+                # Não loga erro para não poluir, apenas conta ignorado
+                ign += 1
+                continue
             
             dp = dtv if i==0 else dtv+relativedelta(months=i+sh)
             vb = vcred * (pct/100)
@@ -281,83 +308,304 @@ def processar_vendas_upload(df):
                 receber_administradora=round(vb,2), pagar_vendedor=round(pv,2), pagar_gerente=round(pg,2),
                 liquido_caixa=round(vb-pv-pg,2), status_recebimento='Pendente', status_pgto_cliente='Pendente'
             ))
-            exist.add(idl); ok+=1
-            
+            exist.add(idl)
+            parcelas_criadas_na_linha += 1
+            ok += 1
+        
+        if parcelas_criadas_na_linha > 0:
+            logs.append({'Linha': linha_excel, 'Cliente': cnm, 'Status': '✅ Sucesso', 'Detalhe': f'{parcelas_criadas_na_linha} parcelas geradas'})
+        else:
+             logs.append({'Linha': linha_excel, 'Cliente': cnm, 'Status': '⚠️ Ignorado', 'Detalhe': 'Todas as parcelas já existiam'})
+
+    # Commit no Banco
     try:
         if ncli_obj: session.add_all(ncli_obj)
         if novos: session.add_all(novos)
         session.commit()
-    except Exception as e: session.rollback(); err.append(str(e))
-    finally: session.close()
-    return ok, ign, err
+    except Exception as e: 
+        session.rollback()
+        logs.append({'Linha': '-', 'Cliente': '-', 'Status': '❌ Erro Fatal', 'Detalhe': str(e)})
+        return 0, 0, pd.DataFrame(logs)
+    finally: 
+        session.close()
+    
+    return ok, ign, pd.DataFrame(logs)
 
 def processar_conciliacao_upload(df):
     session = SessionLocal()
     df.columns = df.columns.str.lower().str.strip()
-    c=0; logs=[]
+    
+    logs = []
+    sucesso_count = 0
+    
+    # 1. Validação de Colunas Obrigatórias
+    cols_obrigatorias = ['grupo', 'cota', 'valor_pago']
+    faltantes = [c for c in cols_obrigatorias if c not in df.columns]
+    if faltantes:
+        return 0, pd.DataFrame([{'Status': 'Erro Crítico', 'Detalhe': f'Colunas faltando no Excel: {faltantes}'}])
+
     try:
-        for _, row in df.iterrows():
-            g=str(row.get('grupo')).replace('.0',''); ct=str(row.get('cota')).replace('.0','')
-            v=float(row.get('valor_pago',0))
-            try: pn=int(str(row.get('num_parcela')).split('/')[0].replace('Parcela ',''))
-            except: pn=0
+        for idx, row in df.iterrows():
+            linha = idx + 2
             
-            l = session.query(Lancamento).filter(Lancamento.grupo==g, Lancamento.cota==ct, Lancamento.parcela.like(f"{pn}/%")).first()
-            log = {'Grupo':g, 'Cota':ct}
-            if not l: log['Status']='Falha: Não encontrado'
-            elif l.status_recebimento=='Pago': log['Status']='Alerta: Já pago'
-            elif abs(l.receber_administradora - v) > 0.5: log['Status']='Falha: Valor divergente'
+            # Normaliza Grupo e Cota
+            g = str(row.get('grupo', '')).replace('.0', '').strip()
+            c = str(row.get('cota', '')).replace('.0', '').strip()
+            
+            # Tenta ler o Valor
+            try:
+                val_pago = float(row.get('valor_pago', 0))
+            except:
+                logs.append({'Linha': linha, 'Grupo/Cota': f"{g}/{c}", 'Status': '❌ Erro', 'Detalhe': 'Valor Pago inválido (não numérico)'})
+                continue
+
+            # Tenta ler o Número da Parcela (Se houver)
+            num_parcela = None
+            if 'num_parcela' in df.columns:
+                raw_p = str(row.get('num_parcela', ''))
+                # Tenta extrair "1" de "1/60" ou "Parcela 1"
+                try: 
+                    num_parcela = int(raw_p.split('/')[0].lower().replace('parcela', '').strip())
+                except: 
+                    pass
+            
+            # --- BUSCA NO BANCO ---
+            query = session.query(Lancamento).filter(Lancamento.grupo == g, Lancamento.cota == c)
+            
+            # Se tiver número da parcela, filtra por ela
+            if num_parcela:
+                # Busca parcela que começa com o número (ex: "1/100")
+                query = query.filter(Lancamento.parcela.like(f"{num_parcela}/%"))
             else:
-                l.status_recebimento='Pago'; l.valor_recebido_real=v; c+=1; log['Status']='Sucesso'
-            logs.append(log)
-        if c: session.commit()
-        return c, pd.DataFrame(logs)
-    except Exception as e: session.rollback(); return 0, pd.DataFrame([{'Erro':str(e)}])
-    finally: session.close()
+                # Se não tem parcela no Excel, tenta achar a mais antiga PENDENTE com valor próximo
+                query = query.filter(Lancamento.status_recebimento != 'Pago')
+            
+            lancs_encontrados = query.all()
+            
+            if not lancs_encontrados:
+                logs.append({
+                    'Linha': linha, 
+                    'Grupo/Cota': f"{g}/{c}", 
+                    'Status': '⚠️ Não Encontrado', 
+                    'Detalhe': f'Venda não existe ou parcela {num_parcela} incorreta'
+                })
+                continue
+            
+            # Pega o primeiro candidato (ou o único)
+            l = lancs_encontrados[0]
+            
+            # --- VALIDAÇÕES DE REGRA DE NEGÓCIO ---
+            
+            # 1. Já está pago?
+            if l.status_recebimento == 'Pago':
+                logs.append({
+                    'Linha': linha, 
+                    'Grupo/Cota': f"{g}/{c}", 
+                    'Parcela': l.parcela,
+                    'Status': '⚠️ Já Baixado', 
+                    'Detalhe': f'Esta parcela já consta como paga em {l.data_real_recebimento or "Data N/A"}'
+                })
+                continue
+                
+            # 2. Valor bate? (Aceita diferença de centavos até 1.00)
+            diferenca = abs(l.receber_administradora - val_pago)
+            if diferenca > 1.00:
+                logs.append({
+                    'Linha': linha, 
+                    'Grupo/Cota': f"{g}/{c}", 
+                    'Parcela': l.parcela,
+                    'Status': '⛔ Divergência', 
+                    'Detalhe': f'Esperado: R$ {l.receber_administradora:.2f} | Veio: R$ {val_pago:.2f}'
+                })
+                continue
+            
+            # --- EXECUTA A BAIXA ---
+            l.status_recebimento = 'Pago'
+            l.valor_recebido_real = val_pago
+            l.data_real_recebimento = datetime.now().date()
+            
+            # Atualiza status do cliente também (opcional, depende da sua regra)
+            # l.status_pgto_cliente = 'Pago' 
+            
+            sucesso_count += 1
+            logs.append({
+                'Linha': linha, 
+                'Grupo/Cota': f"{g}/{c}", 
+                'Parcela': l.parcela,
+                'Status': '✅ Sucesso', 
+                'Detalhe': f'Baixado R$ {val_pago:.2f}'
+            })
+
+        if sucesso_count > 0:
+            session.commit()
+            
+    except Exception as e:
+        session.rollback()
+        logs.append({'Linha': '-', 'Status': '❌ Erro Fatal', 'Detalhe': str(e)})
+        return 0, pd.DataFrame(logs)
+    finally:
+        session.close()
+
+    return sucesso_count, pd.DataFrame(logs)
 
 def processar_cancelamento_inteligente(df):
     REGRAS = carregar_regras_dict()
     session = SessionLocal()
+    
+    # Normaliza Excel
     df.columns = df.columns.str.lower().str.strip()
-    c=0; logs=[]
+    
+    count_alterados = 0
+    logs = []
+    
     try:
-        for _, row in df.iterrows():
-            idv = str(row['id_venda']).strip(); pc = int(row['parcela_cancelamento'])
-            lancs = session.query(Lancamento).filter_by(id_venda=idv).all()
-            if not lancs: logs.append(f"{idv}: Não encontrada"); continue
+        for idx, row in df.iterrows():
+            linha_excel = idx + 2
+            id_venda = str(row.get('id_venda', '')).strip()
             
-            reg = REGRAS.get(lancs[0].tipo_cota, {})
-            lim = reg.get('limite_parcela_estorno', 3); pest = reg.get('pct_estorno', 0)
+            # Validação básica
+            if not id_venda:
+                logs.append({'Linha': linha_excel, 'Venda': '-', 'Status': '❌ Erro', 'Detalhe': 'ID Venda vazio'})
+                continue
+                
+            try:
+                parcela_corte = int(row.get('parcela_cancelamento'))
+            except:
+                logs.append({'Linha': linha_excel, 'Venda': id_venda, 'Status': '❌ Erro', 'Detalhe': 'Parcela inválida (deve ser número)'})
+                continue
             
-            z=0
+            # Busca todos os lançamentos dessa venda
+            lancs = session.query(Lancamento).filter_by(id_venda=id_venda).all()
+            
+            if not lancs:
+                logs.append({'Linha': linha_excel, 'Venda': id_venda, 'Status': '❌ Erro', 'Detalhe': 'Venda não encontrada no banco'})
+                continue
+            
+            # Identifica Regra para cálculo de estorno
+            tipo_cota = lancs[0].tipo_cota
+            regra = REGRAS.get(tipo_cota, {})
+            limite_estorno = regra.get('limite_parcela_estorno', 3)
+            pct_multa = regra.get('pct_estorno', 0.0)
+            
+            # --- LÓGICA DE VERIFICAÇÃO (JÁ ESTÁ CANCELADO?) ---
+            qtd_futuras = 0
+            qtd_ja_canceladas = 0
+            
+            # Identifica quais parcelas deveriam ser canceladas
+            lancs_futuros = []
             for l in lancs:
-                try: pn = int(l.parcela.split('/')[0])
+                # Ignora linha de estorno se já existir
+                if 'EST' in l.id_lancamento: continue
+                
+                try: num_parcela = int(l.parcela.split('/')[0])
                 except: continue
-                if pn > pc:
-                    l.status_recebimento='Cancelado'; l.receber_administradora=0; l.pagar_vendedor=0; l.pagar_gerente=0; l.liquido_caixa=0; z+=1
-            if z: logs.append(f"{idv}: {z} futuras canceladas")
+                
+                if num_parcela > parcela_corte:
+                    lancs_futuros.append(l)
+                    qtd_futuras += 1
+                    if l.status_recebimento == 'Cancelado':
+                        qtd_ja_canceladas += 1
             
-            if pc <= lim and pest > 0:
-                cred = 0
-                for l in lancs:
-                    if l.receber_administradora > 0:
-                        try:
-                            idx = int(l.parcela.split('/')[0])-1
-                            if idx < len(reg['pcts']): cred = l.receber_administradora/(reg['pcts'][idx]/100); break
-                        except: pass
-                if cred > 0:
-                    m = -1*(cred*(pest/100))
-                    session.merge(Lancamento(
-                        id_lancamento=f"{idv}_EST", id_venda=idv, administradora=lancs[0].administradora, grupo=lancs[0].grupo, cota=lancs[0].cota, tipo_cota=lancs[0].tipo_cota, parcela="Estorno",
-                        data_previsao=datetime.now().date(), id_cliente=lancs[0].id_cliente, cliente=lancs[0].cliente, id_vendedor=lancs[0].id_vendedor, vendedor=lancs[0].vendedor, id_gerente=lancs[0].id_gerente, gerente=lancs[0].gerente,
-                        receber_administradora=m, pagar_vendedor=0, pagar_gerente=0, liquido_caixa=m, status_recebimento='Estorno', status_pgto_cliente='Estorno', status_pgto_vendedor='Isento', status_pgto_gerente='Isento'
-                    ))
-                    logs.append(f"{idv}: Estorno de {m:.2f} gerado")
-            c+=1
-        if c: session.commit()
-        return c, logs
-    except Exception as e: session.rollback(); return 0, [str(e)]
-    finally: session.close()
+            # SE TODAS AS FUTURAS JÁ ESTÃO CANCELADAS, IGNORA
+            if qtd_futuras > 0 and qtd_futuras == qtd_ja_canceladas:
+                logs.append({
+                    'Linha': linha_excel, 
+                    'Venda': id_venda, 
+                    'Status': '⚠️ Ignorado', 
+                    'Detalhe': f'Venda já cancelada a partir da parc {parcela_corte}'
+                })
+                continue
+            
+            if qtd_futuras == 0:
+                logs.append({
+                    'Linha': linha_excel, 
+                    'Venda': id_venda, 
+                    'Status': '⚠️ Aviso', 
+                    'Detalhe': 'Nenhuma parcela futura encontrada para cancelar'
+                })
+                continue
+
+            # --- EXECUTA O CANCELAMENTO ---
+            for l in lancs_futuros:
+                l.status_recebimento = 'Cancelado'
+                l.status_pgto_cliente = 'Cancelado'
+                l.receber_administradora = 0.0
+                l.pagar_vendedor = 0.0
+                l.pagar_gerente = 0.0
+                l.liquido_caixa = 0.0
+            
+            msg_sucesso = f"{len(lancs_futuros)} parcelas canceladas."
+            
+            # --- CÁLCULO DE ESTORNO (MULTA) ---
+            # Só gera estorno se o cancelamento for precoce (ex: antes da parcela 3)
+            if parcela_corte <= limite_estorno and pct_multa > 0:
+                id_estorno = f"{id_venda}_EST"
+                
+                # Verifica se estorno já existe
+                estorno_existente = session.query(Lancamento).get(id_estorno)
+                
+                if not estorno_existente:
+                    # Calcula crédito base (Engenharia reversa da comissão recebida)
+                    credito_estimado = 0.0
+                    for l in lancs:
+                        if l.receber_administradora > 0 and 'EST' not in l.id_lancamento:
+                            try:
+                                idx = int(l.parcela.split('/')[0]) - 1
+                                if idx < len(regra['pcts']):
+                                    # Valor / % = Crédito
+                                    credito_estimado = l.receber_administradora / (regra['pcts'][idx] / 100)
+                                    break
+                            except: pass
+                    
+                    if credito_estimado > 0:
+                        valor_multa = -1 * (credito_estimado * (pct_multa / 100))
+                        
+                        estorno_obj = Lancamento(
+                            id_lancamento=id_estorno,
+                            id_venda=id_venda,
+                            administradora=lancs[0].administradora,
+                            grupo=lancs[0].grupo,
+                            cota=lancs[0].cota,
+                            tipo_cota=tipo_cota,
+                            parcela="Estorno",
+                            data_previsao=datetime.now().date(),
+                            id_cliente=lancs[0].id_cliente,
+                            cliente=lancs[0].cliente,
+                            id_vendedor=lancs[0].id_vendedor,
+                            vendedor=lancs[0].vendedor,
+                            id_gerente=lancs[0].id_gerente,
+                            gerente=lancs[0].gerente,
+                            receber_administradora=valor_multa,
+                            pagar_vendedor=0,
+                            pagar_gerente=0,
+                            liquido_caixa=valor_multa,
+                            status_recebimento='Estorno',
+                            status_pgto_cliente='Estorno',
+                            status_pgto_vendedor='Isento',
+                            status_pgto_gerente='Isento'
+                        )
+                        session.add(estorno_obj)
+                        msg_sucesso += f" Multa de {valor_multa:.2f} gerada."
+            
+            logs.append({
+                'Linha': linha_excel, 
+                'Venda': id_venda, 
+                'Status': '✅ Sucesso', 
+                'Detalhe': msg_sucesso
+            })
+            count_alterados += 1
+
+        if count_alterados > 0:
+            session.commit()
+            
+    except Exception as e:
+        session.rollback()
+        logs.append({'Linha': '-', 'Venda': '-', 'Status': '❌ Erro Fatal', 'Detalhe': str(e)})
+        return 0, pd.DataFrame(logs)
+    finally:
+        session.close()
+
+    return count_alterados, pd.DataFrame(logs)
 
 def processar_edicao_lote(df):
     session = SessionLocal()
