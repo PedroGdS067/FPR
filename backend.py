@@ -10,7 +10,7 @@ from models import Lancamento, Usuario, Cliente, RegraComissao
 
 # --- MAPEAMENTO DE COLUNAS (SQL -> APP) ---
 MAPA_SQL_APP = {
-    'id_lancamento': 'ID_Lancamento', 'id_venda': 'ID_Venda',
+    'id_lancamento': 'ID_Lancamento', 'id_venda': 'ID_Venda', 'valor_cliente': 'Valor_Cliente',
     'administradora': 'Administradora', 'grupo': 'Grupo', 'cota': 'Cota', 'tipo_cota': 'Tipo_Cota',
     'parcela': 'Parcela', 'data_previsao': 'Data_Previsao',
     'data_real_recebimento': 'Data_Real_Recebimento', 'valor_recebido_real': 'Valor_Recebido_Real',
@@ -271,7 +271,7 @@ def processar_vendas_upload(df):
             ncli_obj.append(Cliente(id_cliente=cid_final, nome_completo=cnm, obs='Auto Entuba'))
             map_cnm[cnm.lower()] = cid_final; pcid+=1
             # Log discreto de criação de cliente
-            # logs.append({'Linha': linha_excel, 'Cliente': cnm, 'Status': 'Info', 'Detalhe': 'Novo cliente cadastrado'})
+            logs.append({'Linha': linha_excel, 'Cliente': cnm, 'Status': 'Info', 'Detalhe': 'Novo cliente cadastrado'})
 
         # 4. Dados da Venda
         grp = str(row.get('grupo')).replace('.0',''); cta = str(row.get('cota')).replace('.0','')
@@ -283,12 +283,14 @@ def processar_vendas_upload(df):
         dc = int(row.get('dia_vencimento', 15))
         sh = 1 if dtv.day >= dc else 0
         vcred = float(row.get('valor_credito', 0))
+        calc_valor_cliente = vcred * 0.005
         
         # 5. Geração das Parcelas
         pcts = reg['pcts']
         parcelas_criadas_na_linha = 0
+        total_parcelas_fixo = 12
         
-        for i, pct in enumerate(pcts):
+        for i in range(total_parcelas_fixo):
             idl = f"{idv}_P{i+1}"
             
             if idl in exist: 
@@ -296,15 +298,23 @@ def processar_vendas_upload(df):
                 ign += 1
                 continue
             
+            # Pega a data de vencimento da parcela atual
             dp = dtv if i==0 else dtv+relativedelta(months=i+sh)
+            
+            # Verifica se ainda há percentual de comissão a receber, senão zera
+            pct = pcts[i] if i < len(pcts) else 0.0
+            
+            # Cálculos financeiros (se pct for 0, tudo isso resulta em 0 automaticamente)
             vb = vcred * (pct/100)
-            pv = vb * map_tv.get(iv, 0.2); pg = vb * map_tg.get(ig, 0.1)
+            pv = vb * map_tv.get(iv, 0.2)
+            pg = vb * map_tg.get(ig, 0.1)
             
             novos.append(Lancamento(
                 id_lancamento=idl, id_venda=idv, administradora=reg['admin'],
-                grupo=grp, cota=cta, tipo_cota=tipo, parcela=f"{i+1}/{len(pcts)}",
+                grupo=grp, cota=cta, tipo_cota=tipo, 
+                parcela=f"{i+1}/{total_parcelas_fixo}",
                 data_previsao=dp.date(), id_cliente=cid_final, cliente=cnm,
-                id_vendedor=iv, vendedor=map_u[iv], id_gerente=ig, gerente=map_u.get(ig,''),
+                id_vendedor=iv, vendedor=map_u[iv], id_gerente=ig, gerente=map_u.get(ig,''), valor_cliente=round(calc_valor_cliente, 2),
                 receber_administradora=round(vb,2), pagar_vendedor=round(pv,2), pagar_gerente=round(pg,2),
                 liquido_caixa=round(vb-pv-pg,2), status_recebimento='Pendente', status_pgto_cliente='Pendente'
             ))
@@ -533,6 +543,8 @@ def processar_cancelamento_inteligente(df):
                 l.pagar_vendedor = 0.0
                 l.pagar_gerente = 0.0
                 l.liquido_caixa = 0.0
+                if hasattr(l, 'valor_cliente'):
+                    l.valor_cliente = 0.0
             
             msg_sucesso = f"{len(lancs_futuros)} parcelas canceladas."
             
@@ -575,6 +587,7 @@ def processar_cancelamento_inteligente(df):
                             vendedor=lancs[0].vendedor,
                             id_gerente=lancs[0].id_gerente,
                             gerente=lancs[0].gerente,
+                            valor_cliente=0.0,
                             receber_administradora=valor_multa,
                             pagar_vendedor=0,
                             pagar_gerente=0,

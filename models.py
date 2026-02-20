@@ -68,6 +68,7 @@ class Lancamento(Base):
     data_previsao = Column(Date)
     data_real_recebimento = Column(Date, nullable=True)
     valor_recebido_real = Column(Float, nullable=True)
+    valor_cliente = Column(Float, default=0.0)
     
     id_cliente = Column(String(50))
     cliente = Column(String(150))
