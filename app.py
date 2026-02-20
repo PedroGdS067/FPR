@@ -942,10 +942,10 @@ def main():
     # --- ABA: AJUSTES ---
     if "🛠️ Ajustes" in mapa_abas:
         with mapa_abas["🛠️ Ajustes"]:
-            st.header("🛠️ Ajustes e Manutenção em Lote")
-            st.info("Área restrita para correção em massa da base de dados financeira.")
+            st.header("🛠️ Ajustes, Manutenção e Segurança")
+            st.info("Área restrita para correção em massa e exportação de segurança da base de dados.")
 
-            t1, t2 = st.tabs(["📝 Edição em Lote", "🗑️ Exclusão em Lote"])
+            t1, t2, t3 = st.tabs(["📝 Edição em Lote", "🗑️ Exclusão em Lote", "💾 Backup do Sistema"])
             
             # --- SUB-ABA: EDIÇÃO ---
             with t1:
@@ -973,27 +973,15 @@ def main():
                         
                         if not log.empty:
                             st.divider()
-                            
-                            # --- Título e Botão de Exportação lado a lado (EDIÇÃO) ---
                             col_tit, col_btn = st.columns([3, 1])
                             
                             with col_tit:
                                 st.subheader("📋 Relatório de Alterações")
-                                
                             with col_btn:
                                 buffer_edicao = io.BytesIO()
                                 with pd.ExcelWriter(buffer_edicao, engine='openpyxl') as writer:
                                     log.to_excel(writer, index=False, sheet_name='Auditoria_Edicao')
-                                
-                                st.download_button(
-                                    label="📥 Exportar Relatório",
-                                    data=buffer_edicao.getvalue(),
-                                    file_name="Auditoria_Edicao_Lote.xlsx",
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    use_container_width=True,
-                                    type="secondary",
-                                    key="btn_exp_edicao"
-                                )
+                                st.download_button("📥 Exportar Relatório", buffer_edicao.getvalue(), "Auditoria_Edicao_Lote.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="secondary", key="btn_exp_edicao")
                             
                             def color_edicao(val):
                                 color = 'black'
@@ -1003,11 +991,7 @@ def main():
                                 elif 'ignorado' in val_str: color = 'orange'
                                 return f'color: {color}; font-weight: bold'
                             
-                            st.dataframe(
-                                log.style.applymap(color_edicao, subset=['Status']), 
-                                use_container_width=True, 
-                                hide_index=True
-                            )
+                            st.dataframe(log.style.applymap(color_edicao, subset=['Status']), use_container_width=True, hide_index=True)
 
             # --- SUB-ABA: EXCLUSÃO ---
             with t2:
@@ -1017,7 +1001,7 @@ def main():
                     st.warning("""
                     ⚠️ **Atenção: Ação Irreversível!**
                     * Esta ferramenta remove permanentemente o registro do banco de dados.
-                    * O sistema bloqueará automaticamente a exclusão de parcelas que já possuam qualquer tipo de pagamento atrelado.
+                    * O sistema bloqueará automaticamente a exclusão de parcelas com qualquer tipo de pagamento.
                     * A planilha precisa apenas da coluna **`ID_Lancamento`**.
                     """)
                 
@@ -1035,27 +1019,15 @@ def main():
                         
                         if not log.empty:
                             st.divider()
-                            
-                            # --- Título e Botão de Exportação lado a lado (EXCLUSÃO) ---
                             col_tit_del, col_btn_del = st.columns([3, 1])
                             
                             with col_tit_del:
                                 st.subheader("📋 Relatório de Exclusões")
-                                
                             with col_btn_del:
                                 buffer_exclusao = io.BytesIO()
                                 with pd.ExcelWriter(buffer_exclusao, engine='openpyxl') as writer:
                                     log.to_excel(writer, index=False, sheet_name='Auditoria_Exclusao')
-                                
-                                st.download_button(
-                                    label="📥 Exportar Relatório",
-                                    data=buffer_exclusao.getvalue(),
-                                    file_name="Auditoria_Exclusao_Lote.xlsx",
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    use_container_width=True,
-                                    type="secondary",
-                                    key="btn_exp_exclusao"
-                                )
+                                st.download_button("📥 Exportar Relatório", buffer_exclusao.getvalue(), "Auditoria_Exclusao_Lote.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="secondary", key="btn_exp_exclusao")
                             
                             def color_exclusao(val):
                                 color = 'black'
@@ -1065,11 +1037,54 @@ def main():
                                 elif 'ignorado' in val_str or 'aviso' in val_str: color = 'orange'
                                 return f'color: {color}; font-weight: bold'
                             
-                            st.dataframe(
-                                log.style.applymap(color_exclusao, subset=['Status']), 
-                                use_container_width=True, 
-                                hide_index=True
-                            )
+                            st.dataframe(log.style.applymap(color_exclusao, subset=['Status']), use_container_width=True, hide_index=True)
+
+            # --- SUB-ABA: BACKUP (NOVO) ---
+            with t3:
+                c_bkp_info, c_bkp_acao = st.columns([1, 1])
+                
+                with c_bkp_info:
+                    st.markdown("""
+                    ### 🗄️ Backup Completo em Excel
+                    Esta rotina extrai **toda a base de dados do sistema** em tempo real e consolida em um único arquivo Excel.
+                    
+                    **O arquivo gerado conterá 4 abas:**
+                    1. `Financeiro`: Todo o histórico de lançamentos, parcelas e comissões.
+                    2. `Clientes`: Cadastro e CRM (E-mails, Telefones, Obs).
+                    3. `Regras`: Catálogo de administradoras e produtos.
+                    4. `Usuarios`: Logins, Nomes e Taxas de comissionamento da equipe.
+                    """)
+                    
+                with c_bkp_acao:
+                    st.error("⚠️ **Segurança da Informação:** O arquivo gerado contém dados sensíveis de faturamento da empresa. Salve-o em um ambiente seguro (Nuvem/Drive).")
+                    
+                    # Geramos o arquivo dinamicamente apenas quando solicitado para não pesar a navegação da aba
+                    if st.button("🔄 Preparar Arquivo de Backup", use_container_width=True):
+                        with st.spinner("Buscando dados e compilando o Excel..."):
+                            buffer_bkp = io.BytesIO()
+                            with pd.ExcelWriter(buffer_bkp, engine='openpyxl') as writer:
+                                # Chama as funções nativas do seu backend para pegar as tabelas
+                                backend.carregar_dados().to_excel(writer, index=False, sheet_name='Financeiro')
+                                backend.carregar_clientes().to_excel(writer, index=False, sheet_name='Clientes')
+                                backend.carregar_regras_df().to_excel(writer, index=False, sheet_name='Regras')
+                                backend.carregar_usuarios_df().to_excel(writer, index=False, sheet_name='Usuarios')
+                            
+                            # Salva o arquivo na sessão para liberar o botão de download
+                            st.session_state['arquivo_backup'] = buffer_bkp.getvalue()
+                            st.session_state['nome_backup'] = f"Backup_FPR_Consorcios_{pd.Timestamp.today().strftime('%Y%m%d_%H%M')}.xlsx"
+                    
+                    # Se o arquivo já foi gerado na memória nesta sessão, libera o botão de baixar
+                    if 'arquivo_backup' in st.session_state:
+                        st.success("✅ Arquivo consolidado com sucesso!")
+                        st.download_button(
+                            label="📥 Baixar Backup (.xlsx)",
+                            data=st.session_state['arquivo_backup'],
+                            file_name=st.session_state['nome_backup'],
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                            type="primary",
+                            key="btn_download_backup"
+                        )
 
     # --- ABA: PARCELAS CLIENTES ---
     if "📄 Parcelas Clientes" in mapa_abas:
