@@ -240,6 +240,7 @@ def main():
                 m_g = dfv['ID_Gerente'] == meu_id
                 if 'Pagar_Vendedor' in dfv: dfv.loc[m_v, 'Minha_Comissao'] += dfv.loc[m_v, 'Pagar_Vendedor']
                 if 'Pagar_Gerente' in dfv: dfv.loc[m_g, 'Minha_Comissao'] += dfv.loc[m_g, 'Pagar_Gerente']
+                dfv = dfv[dfv['Minha_Comissao'] != 0]
 
             # --- FILTROS AVANÇADOS ---
             with st.expander("🔍 Filtros do Painel", expanded=False):
