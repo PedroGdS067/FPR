@@ -36,6 +36,7 @@ def realizar_backup():
     pass 
 
 # --- LEITURA COM LIMPEZA PARA OS FILTROS ---
+@st.cache_data(ttl=300, show_spinner=False) # Mantém na memória por 5 minutos (300 segundos)
 def carregar_dados():
     try:
         # Lê do SQL
@@ -62,6 +63,7 @@ def carregar_dados():
         print(f"Erro leitura SQL: {e}")
         return pd.DataFrame()
 
+@st.cache_data(ttl=300, show_spinner=False)
 def carregar_usuarios_df():
     try: 
         df = pd.read_sql("SELECT * FROM usuarios", engine)
@@ -70,14 +72,17 @@ def carregar_usuarios_df():
         return df
     except: return pd.DataFrame()
 
+@st.cache_data(ttl=300, show_spinner=False)
 def carregar_clientes():
     try: return pd.read_sql("SELECT * FROM clientes", engine)
     except: return pd.DataFrame()
 
+@st.cache_data(ttl=300, show_spinner=False)
 def carregar_regras_df():
     try: return pd.read_sql("SELECT * FROM regras_comissao", engine)
     except: return pd.DataFrame()
 
+@st.cache_data(ttl=300, show_spinner=False)
 def carregar_regras_dict():
     df = carregar_regras_df()
     regras = {}
@@ -125,6 +130,7 @@ def adicionar_novo_usuario(id_u, nome, user, senha, tipo, tv, tg):
             taxa_gerencia=float(tg)
         )
         session.add(novo); session.commit()
+        st.cache_data.clear()
         return True, "Cadastrado."
     except Exception as e: session.rollback(); return False, str(e)
     finally: session.close()
@@ -153,6 +159,7 @@ def excluir_usuario(id_u):
         # 4. Se passou por tudo, exclui
         session.delete(usuario)
         session.commit()
+        st.cache_data.clear()
         return True, f"✅ Sucesso: Usuário '{usuario.nome_completo}' foi excluído permanentemente."
 
     except Exception as e:
@@ -167,7 +174,9 @@ def salvar_cliente_manual(id_c, nome, email, tel, obs):
         cli = session.query(Cliente).get(str(id_c))
         if cli: cli.nome_completo=nome; cli.email=email; cli.telefone=tel; cli.obs=obs; msg="Atualizado"
         else: session.add(Cliente(id_cliente=str(id_c), nome_completo=nome, email=email, telefone=tel, obs=obs)); msg="Criado"
-        session.commit(); return True, msg
+        session.commit()
+        st.cache_data.clear()
+        return True, msg
     except Exception as e: session.rollback(); return False, str(e)
     finally: session.close()
 
@@ -202,7 +211,10 @@ def salvar_regra_completa(d):
             indice_reajuste=d['indice_reajuste'], modalidades_contemplacao=m,
             pct_estorno=d['pct_estorno'], limite_parcela_estorno=d['limite_parcela_estorno']
         ))
-        session.commit(); return True, "Salvo"
+        st.cache_data.clear()
+        session.commit()
+        st.cache_data.clear()
+        return True, "Salvo"
     except Exception as e: session.rollback(); return False, str(e)
     finally: session.close()
 
@@ -332,6 +344,7 @@ def processar_vendas_upload(df):
         if ncli_obj: session.add_all(ncli_obj)
         if novos: session.add_all(novos)
         session.commit()
+        st.cache_data.clear()
     except Exception as e: 
         session.rollback()
         logs.append({'Linha': '-', 'Cliente': '-', 'Status': '❌ Erro Fatal', 'Detalhe': str(e)})
@@ -448,6 +461,7 @@ def processar_conciliacao_upload(df):
 
         if sucesso_count > 0:
             session.commit()
+            st.cache_data.clear()
             
     except Exception as e:
         session.rollback()
@@ -610,6 +624,7 @@ def processar_cancelamento_inteligente(df):
 
         if count_alterados > 0:
             session.commit()
+            st.cache_data.clear()
             
     except Exception as e:
         session.rollback()
@@ -721,6 +736,7 @@ def processar_edicao_lote(df):
     if count_alterados > 0:
         try:
             session.commit()
+            st.cache_data.clear()
         except Exception as e:
             session.rollback()
             logs.append({'ID': 'Geral', 'Status': '❌ Erro Crítico', 'Detalhe': str(e)})
@@ -760,6 +776,7 @@ def processar_exclusao_lote(df):
     if count > 0:
         try:
             session.commit()
+            st.cache_data.clear()
         except Exception as e:
             session.rollback()
             return 0, pd.DataFrame([{'ID': 'Erro', 'Status': 'Crítico', 'Detalhe': str(e)}])
@@ -771,7 +788,9 @@ def alterar_status_cliente_lote(ids, stt):
     session = SessionLocal()
     try:
         session.query(Lancamento).filter(Lancamento.id_lancamento.in_(ids)).update({Lancamento.status_pgto_cliente: stt}, synchronize_session=False)
-        session.commit(); return len(ids), "OK"
+        session.commit()
+        st.cache_data.clear()
+        return len(ids), "OK"
     except Exception as e: session.rollback(); return 0, str(e)
     finally: session.close()
 
@@ -785,7 +804,9 @@ def processar_baixa_comissoes_lote(lista):
                 if a['tipo']=='Vendedor': l.status_pgto_vendedor = a['status']
                 else: l.status_pgto_gerente = a['status']
                 c+=1
-        session.commit(); return c, "OK"
+        session.commit()
+        st.cache_data.clear()
+        return c, "OK"
     except Exception as e: session.rollback(); return 0, str(e)
     finally: session.close()
 
@@ -801,6 +822,7 @@ def alterar_senha_usuario(id_user, nova_senha):
         usuario.password_hash = novo_hash
         
         session.commit()
+        st.cache_data.clear()
         return True, f"Senha de {usuario.nome_completo} alterada com sucesso!"
     except Exception as e:
         session.rollback()

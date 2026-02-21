@@ -12,50 +12,57 @@ st.set_page_config(page_title="FPR Consórcios", page_icon="💰", layout="wide"
 # =========================================================================
 st.markdown("""
 <style>
-    /* 1. Estilização dos Cards de Métricas */
-    [data-testid="stMetric"] {
-        background-color: rgba(128, 128, 128, 0.1) !important; /* Fundo translúcido sutil */
-        border: 1px solid rgba(128, 128, 128, 0.2);
-        border-radius: 10px;
-        padding: 15px 20px;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-    }
-    
-    /* 2. Container das Abas */
-    .stTabs [data-baseweb="tab-list"] {
+    /* Garante alinhamento horizontal com quebra de linha para caber na tela */
+    [data-testid="stRadio"] > div {
+        display: flex;
+        flex-direction: row;
+        flex-wrap: wrap;
         gap: 10px;
-        padding-bottom: 10px;
     }
-    
-    /* 3. Abas (Botões inativos) */
-    .stTabs [data-baseweb="tab"] {
-        height: 45px;
-        background-color: rgba(128, 128, 128, 0.15) !important; /* Destaque translúcido universal */
-        border-radius: 8px;
+
+    /* Oculta apenas as bolinhas (input nativo e ícones svg) sem afetar o texto */
+    [data-testid="stRadio"] [role="radiogroup"] label input,
+    [data-testid="stRadio"] [role="radiogroup"] label svg,
+    [data-testid="stRadio"] [role="radiogroup"] label > div:empty {
+        display: none !important;
+    }
+
+    /* Estilo do Botão (Aba Inativa) */
+    [data-testid="stRadio"] [role="radiogroup"] label {
+        background-color: rgba(128, 128, 128, 0.15) !important;
         padding: 10px 20px;
-        font-weight: 600;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: 0.2s;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         border: none;
     }
+
+    /* Força o texto a aparecer com a cor e tamanho corretos */
+    [data-testid="stRadio"] [role="radiogroup"] label p {
+        display: block !important;
+        visibility: visible !important;
+        margin: 0 !important;
+        font-weight: 600 !important;
+        font-size: 15px !important;
+        color: var(--text-color) !important; /* Adapta ao tema escuro/claro */
+    }
+
+    /* Efeito Hover (ao passar o mouse por cima) */
+    [data-testid="stRadio"] [role="radiogroup"] label:hover {
+        background-color: rgba(128, 128, 128, 0.25) !important;
+    }
+
+    /* Aba Ativa (Selecionada) ganha a cor vermelha */
+    [data-testid="stRadio"] [role="radiogroup"] label[data-checked="true"] {
+        background-color: #ff4b4b !important;
+    }
     
-    /* 4. Aba Selecionada (Destaque Primário) */
-    .stTabs [aria-selected="true"] {
-        background-color: #ff4b4b !important; /* Vermelho padrão Streamlit */
+    /* O texto da Aba Ativa fica branco puro */
+    [data-testid="stRadio"] [role="radiogroup"] label[data-checked="true"] p {
         color: white !important;
-    }
-    
-    /* Remove a linha nativa debaixo das abas */
-    .stTabs [data-baseweb="tab-highlight"] {
-        display: none;
-    }
-    
-    /* 5. Cartão de Perfil na Barra Lateral */
-    .sidebar-profile {
-        background-color: rgba(128, 128, 128, 0.1);
-        padding: 15px;
-        border-radius: 10px;
-        text-align: center;
-        margin-bottom: 20px;
-        border: 1px solid rgba(128, 128, 128, 0.2);
     }
 </style>
 """, unsafe_allow_html=True)
@@ -176,19 +183,24 @@ def main():
         st.error("Seu perfil não tem acesso a nenhuma funcionalidade. Contate o suporte técnico.")
         return
 
-    # Renderiza as abas
-    objetos_abas = st.tabs(abas_visiveis)
-    
-    # Cria dicionário de mapeamento para o resto do código
-    mapa_abas = dict(zip(abas_visiveis, objetos_abas))
+    # O Streamlit lembrará automaticamente qual aba estava marcada após qualquer st.rerun()!
+    aba_selecionada = st.radio(
+        "Navegação", 
+        options=abas_visiveis, 
+        horizontal=True, 
+        label_visibility="collapsed",
+        key="aba_ativa" 
+    )
+
+    st.divider() # Linha de separação entre o menu e o conteúdo
 
     # =========================================================================
     # RENDERIZAÇÃO DAS ABAS (Só entra no IF se a aba existir no mapa)
     # =========================================================================
 
     # --- ABA: DASHBOARD ---
-    if "📊 Dashboard" in mapa_abas:
-        with mapa_abas["📊 Dashboard"]:
+    if aba_selecionada == "📊 Dashboard":
+        with st.container(): # Mantemos o container para você não precisar re-indentar o código abaixo!
             # Cabeçalho dinâmico baseado no perfil
             if cargo_atual in ['Master', 'Administrativo', 'Financeiro']:
                 st.header("📈 Visão Geral da Empresa")
@@ -373,8 +385,8 @@ def main():
             )
 
     # --- ABA: ENTUBA ---
-    if "📥 Entuba" in mapa_abas:
-        with mapa_abas["📥 Entuba"]:
+    if aba_selecionada == "📥 Entuba":
+        with st.container():
             st.header("📥 Entrada de Vendas (Entuba)")
             st.info("Área para upload de novas vendas e geração automática das parcelas (financeiro e comissões).")
 
@@ -452,8 +464,8 @@ def main():
                         )
 
     # --- ABA: CONCILIAÇÃO ---
-    if "🏦 Conciliação" in mapa_abas:
-        with mapa_abas["🏦 Conciliação"]:
+    if aba_selecionada == "🏦 Conciliação":
+        with st.container():
             st.header("🏦 Conciliação Bancária (Baixa Automática)")
             st.info("Ferramenta para cruzar o extrato da Administradora com o sistema e realizar a baixa das parcelas pagas.")
 
@@ -528,8 +540,8 @@ def main():
                         )
 
     # --- ABA: CANCELAMENTOS ---
-    if "❌ Cancelamentos" in mapa_abas:
-        with mapa_abas["❌ Cancelamentos"]:
+    if aba_selecionada == "❌ Cancelamentos":
+        with st.container():
             st.header("❌ Gestão de Cancelamentos (Churn)")
             st.info("Ferramenta automatizada para interromper vendas e aplicar regras de estorno financeiro.")
 
@@ -599,8 +611,8 @@ def main():
                         )
 
     # --- ABA: USUÁRIOS ---
-    if "👥 Usuários" in mapa_abas:
-        with mapa_abas["👥 Usuários"]:
+    if aba_selecionada == "👥 Usuários":
+        with st.container():
             st.header("👥 Gestão de Usuários e Acessos")
             st.info("Cadastre sua equipe, gerencie perfis de acesso e defina as taxas padrão de comissionamento.")
             
@@ -702,8 +714,8 @@ def main():
                                 st.error(msg)
 
     # --- ABA: REGRAS ---
-    if "⚙️ Regras" in mapa_abas:
-        with mapa_abas["⚙️ Regras"]:
+    if aba_selecionada == "⚙️ Regras":
+        with st.container():
             st.header("⚙️ Catálogo de Produtos e Regras")
             st.info("Cadastre e gerencie os produtos de consórcio, parâmetros técnicos e réguas de comissionamento.")
             
@@ -826,8 +838,8 @@ def main():
                                 st.error(f"❌ Erro ao salvar: {msg}")
 
     # --- ABA: CLIENTES ---
-    if "📇 Clientes" in mapa_abas:
-        with mapa_abas["📇 Clientes"]:
+    if aba_selecionada == "📇 Clientes":
+        with st.container():
             st.header("📇 Gestão de Clientes (CRM)")
             st.info("Consulte o histórico de parcelas, atualize contatos e acompanhe a inadimplência da sua carteira.")
             
@@ -940,8 +952,8 @@ def main():
                     st.markdown("<h4 style='text-align: center; color: gray;'>👈 Selecione um cliente na lista ao lado para ver o histórico.</h4>", unsafe_allow_html=True)
 
     # --- ABA: AJUSTES ---
-    if "🛠️ Ajustes" in mapa_abas:
-        with mapa_abas["🛠️ Ajustes"]:
+    if aba_selecionada == "🛠️ Ajustes":
+        with st.container():
             st.header("🛠️ Ajustes, Manutenção e Segurança")
             st.info("Área restrita para correção em massa e exportação de segurança da base de dados.")
 
@@ -1087,8 +1099,8 @@ def main():
                         )
 
     # --- ABA: PARCELAS CLIENTES ---
-    if "📄 Parcelas Clientes" in mapa_abas:
-        with mapa_abas["📄 Parcelas Clientes"]:
+    if aba_selecionada == "📄 Parcelas Clientes":
+        with st.container():
             st.header("📄 Controle de Parcelas dos Clientes")
             st.info("Filtre, selecione e atualize o status dos pagamentos realizados pelos clientes.")
             
@@ -1203,8 +1215,8 @@ def main():
                         st.rerun()
 
     # --- ABA: COMISSÕES ---
-    if "💸 Comissões" in mapa_abas:
-        with mapa_abas["💸 Comissões"]:
+    if aba_selecionada == "💸 Comissões":
+        with st.container():
             st.header("💸 Controle de Comissões")
             st.info("Filtre, confira as referências das vendas e realize a baixa (pagamento) das comissões da equipe.")
             
