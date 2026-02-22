@@ -8,6 +8,7 @@ import hashlib
 from database import engine, SessionLocal
 from models import Lancamento, Usuario, Cliente, RegraComissao
 
+
 # --- MAPEAMENTO DE COLUNAS (SQL -> APP) ---
 MAPA_SQL_APP = {
     'id_lancamento': 'ID_Lancamento', 'id_venda': 'ID_Venda', 'valor_cliente': 'Valor_Cliente',
@@ -110,6 +111,33 @@ def carregar_regras_dict():
             }
         except: continue
     return regras
+
+@st.cache_data(ttl=60, show_spinner=False)
+def carregar_aprovacoes_pendentes():
+    session = SessionLocal()
+    try:
+        engine = session.get_bind()
+        # Lê apenas as que não foram aprovadas ou rejeitadas ainda
+        df_pendentes = pd.read_sql("SELECT * FROM vendas_pendentes WHERE status_aprovacao = 'Pendente'", con=engine)
+        return df_pendentes
+    except:
+        # Se for o primeiro dia de uso e a tabela ainda não existir no SQL, retorna vazio sem dar erro
+        return pd.DataFrame()
+    finally:
+        session.close()
+
+@st.cache_data(ttl=60, show_spinner=False)
+def carregar_meus_rascunhos(id_vendedor):
+    session = SessionLocal()
+    try:
+        engine = session.get_bind()
+        # Busca apenas os rascunhos do vendedor que está logado
+        query = f"SELECT * FROM vendas_pendentes WHERE status_aprovacao = 'Rascunho' AND id_vendedor = '{id_vendedor}'"
+        return pd.read_sql(query, con=engine)
+    except:
+        return pd.DataFrame()
+    finally:
+        session.close()
 
 # --- ESCRITA ---
 def adicionar_novo_usuario(id_u, nome, user, senha, tipo, tv, tg):
@@ -223,10 +251,13 @@ def processar_vendas_upload(df):
     REGRAS = carregar_regras_dict()
     if not REGRAS: return 0, 0, pd.DataFrame([{'Status': 'Erro Crítico', 'Detalhe': 'Nenhuma regra de comissão cadastrada (Aba 6)'}])
     
+    # Busca o DataFrame completo de regras para o cálculo do Valor do Cliente
+    df_regras_full = carregar_regras_df()
+    regras_completas = df_regras_full.set_index('tipo_cota').to_dict('index') if not df_regras_full.empty else {}
+    
     # Padroniza Excel
     df.columns = df.columns.str.strip().str.lower()
     
-    # Mapas de Lookup (Cache para performance)
     mapa_tab = {limpar_id(v['id_tabela']): k for k,v in REGRAS.items() if v.get('id_tabela')}
     
     df_u = carregar_usuarios_df()
@@ -241,18 +272,14 @@ def processar_vendas_upload(df):
     except: pcid = 1
     
     session = SessionLocal()
-    # Cache dos IDs existentes para verificar duplicidade rápido
     exist = {x[0] for x in session.query(Lancamento.id_lancamento).all()}
     
-    novos = []; ncli_obj = []; 
-    logs = [] # Lista de logs detalhados
-    ign = 0; ok = 0
+    novos = []; ncli_obj = []; logs = []; ign = 0; ok = 0
     
     for idx, row in df.iterrows():
         linha_excel = idx + 2
         cliente_nome = str(row.get('cliente', 'Desc.')).strip()
         
-        # 1. Validação de Produto
         tipo = row.get('tipo_cota')
         if not tipo and 'id_tabela' in row: tipo = mapa_tab.get(limpar_id(row['id_tabela']))
         
@@ -261,15 +288,14 @@ def processar_vendas_upload(df):
             continue
         
         reg = REGRAS[tipo]
+        reg_c = regras_completas.get(tipo, {}) 
         
-        # 2. Validação de Pessoas
         iv = limpar_id(row.get('id_vendedor'))
         ig = limpar_id(row.get('id_gerente'))
         if iv not in map_u: 
             logs.append({'Linha': linha_excel, 'Cliente': cliente_nome, 'Status': '❌ Erro', 'Detalhe': f'Vendedor ID {iv} inexistente'})
             continue
         
-        # 3. Tratamento Cliente
         cnm = cliente_nome
         cid_xls = limpar_id(row.get('id_cliente'))
         cid_final = None
@@ -282,12 +308,10 @@ def processar_vendas_upload(df):
             cid_final = str(pcid)
             ncli_obj.append(Cliente(id_cliente=cid_final, nome_completo=cnm, obs='Auto Entuba'))
             map_cnm[cnm.lower()] = cid_final; pcid+=1
-            # Log discreto de criação de cliente
             logs.append({'Linha': linha_excel, 'Cliente': cnm, 'Status': 'Info', 'Detalhe': 'Novo cliente cadastrado'})
 
-        # 4. Dados da Venda
         grp = str(row.get('grupo')).replace('.0',''); cta = str(row.get('cota')).replace('.0','')
-        idv = f"{reg['admin']}_{grp}_{cta}"
+        idv = f"{reg.get('admin', reg_c.get('administradora', ''))}_{grp}_{cta}"
         
         try: dtv = pd.to_datetime(row['data_venda'])
         except: logs.append({'Linha': linha_excel, 'Cliente': cnm, 'Status': '❌ Erro', 'Detalhe': 'Data inválida'}); continue
@@ -295,9 +319,37 @@ def processar_vendas_upload(df):
         dc = int(row.get('dia_vencimento', 15))
         sh = 1 if dtv.day >= dc else 0
         vcred = float(row.get('valor_credito', 0))
-        calc_valor_cliente = vcred * 0.005
         
-        # 5. Geração das Parcelas
+        # --- MATEMÁTICA PADRÃO DO VALOR DO CLIENTE ---
+        prazo_venda = pd.to_numeric(row.get('prazo'), errors='coerce')
+        if pd.isna(prazo_venda) or prazo_venda <= 0: prazo_venda = float(reg_c.get('max_prazo', 1))
+
+        taxa_adm_venda = pd.to_numeric(row.get('taxa_adm'), errors='coerce')
+        if pd.isna(taxa_adm_venda): taxa_adm_venda = float(reg_c.get('max_taxa_adm', 0))
+
+        fundo_res = float(reg_c.get('fundo_reserva', 0))
+        taxa_antecipada = float(reg_c.get('taxa_antecipada', 0))
+
+        valor_taxa_adm = vcred * (taxa_adm_venda / 100.0)
+        valor_fundo_res = vcred * (fundo_res / 100.0)
+        valor_antecipacao = vcred * (taxa_antecipada / 100.0)
+
+        total_divida = vcred + valor_taxa_adm + valor_fundo_res
+        saldo_restante = total_divida - valor_antecipacao
+        parcela_normal = saldo_restante / prazo_venda if prazo_venda > 0 else 0
+        primeira_parcela = parcela_normal + valor_antecipacao
+
+        # --- NOVO: OVERRIDE MANUAL SE PREENCHIDO NA PLANILHA ---
+        val_pri_manual = pd.to_numeric(row.get('valor_primeira_parcela'), errors='coerce')
+        val_dem_manual = pd.to_numeric(row.get('valor_demais_parcelas'), errors='coerce')
+
+        if pd.notna(val_pri_manual) and val_pri_manual > 0:
+            primeira_parcela = val_pri_manual
+            
+        if pd.notna(val_dem_manual) and val_dem_manual > 0:
+            parcela_normal = val_dem_manual
+
+        # --- GERAÇÃO DAS PARCELAS ---
         pcts = reg['pcts']
         parcelas_criadas_na_linha = 0
         total_parcelas_fixo = 12
@@ -306,29 +358,30 @@ def processar_vendas_upload(df):
             idl = f"{idv}_P{i+1}"
             
             if idl in exist: 
-                # Não loga erro para não poluir, apenas conta ignorado
                 ign += 1
                 continue
             
-            # Pega a data de vencimento da parcela atual
             dp = dtv if i==0 else dtv+relativedelta(months=i+sh)
-            
-            # Verifica se ainda há percentual de comissão a receber, senão zera
             pct = pcts[i] if i < len(pcts) else 0.0
             
-            # Cálculos financeiros (se pct for 0, tudo isso resulta em 0 automaticamente)
+            # Define o valor e o status baseados em ser a primeira ou não
+            valor_cliente_atual = primeira_parcela if i == 0 else parcela_normal
+            status_pg_cli = 'Pago' if i == 0 else 'Pendente' # <--- A primeira parcela já entra paga!
+            
             vb = vcred * (pct/100)
             pv = vb * map_tv.get(iv, 0.2)
             pg = vb * map_tg.get(ig, 0.1)
             
             novos.append(Lancamento(
-                id_lancamento=idl, id_venda=idv, administradora=reg['admin'],
+                id_lancamento=idl, id_venda=idv, administradora=reg.get('admin', reg_c.get('administradora')),
                 grupo=grp, cota=cta, tipo_cota=tipo, 
                 parcela=f"{i+1}/{total_parcelas_fixo}",
                 data_previsao=dp.date(), id_cliente=cid_final, cliente=cnm,
-                id_vendedor=iv, vendedor=map_u[iv], id_gerente=ig, gerente=map_u.get(ig,''), valor_cliente=round(calc_valor_cliente, 2),
+                id_vendedor=iv, vendedor=map_u[iv], id_gerente=ig, gerente=map_u.get(ig,''), 
+                valor_cliente=round(valor_cliente_atual, 2), 
                 receber_administradora=round(vb,2), pagar_vendedor=round(pv,2), pagar_gerente=round(pg,2),
-                liquido_caixa=round(vb-pv-pg,2), status_recebimento='Pendente', status_pgto_cliente='Pendente'
+                liquido_caixa=round(vb-pv-pg,2), status_recebimento='Pendente', 
+                status_pgto_cliente=status_pg_cli  # <--- Salva o status predefinido
             ))
             exist.add(idl)
             parcelas_criadas_na_linha += 1
@@ -339,7 +392,6 @@ def processar_vendas_upload(df):
         else:
              logs.append({'Linha': linha_excel, 'Cliente': cnm, 'Status': '⚠️ Ignorado', 'Detalhe': 'Todas as parcelas já existiam'})
 
-    # Commit no Banco
     try:
         if ncli_obj: session.add_all(ncli_obj)
         if novos: session.add_all(novos)
@@ -827,6 +879,162 @@ def alterar_senha_usuario(id_user, nova_senha):
     except Exception as e:
         session.rollback()
         return False, str(e)
+    finally:
+        session.close()
+
+# --- FILA DE APROVAÇÕES DE VENDAS ---
+def enviar_venda_aprovacao(id_vendedor, id_gerente, cliente, adm, produto, credito):
+    # Cria o DataFrame com a venda
+    nova_venda = pd.DataFrame([{
+        "Data_Solicitacao": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "id_vendedor": id_vendedor,
+        "id_gerente": id_gerente,
+        "cliente": cliente,
+        "administradora": adm,
+        "tipo_cota": produto,
+        "valor_credito": credito,
+        "status_aprovacao": "Pendente"
+    }])
+    
+    session = SessionLocal() # Abre a sua sessão configurada no secrets.toml
+    try:
+        engine = session.get_bind() # Pega o motor do banco de dados
+        # O Pandas usa o seu motor para criar a tabela sozinho e inserir os dados!
+        nova_venda.to_sql('vendas_pendentes', con=engine, if_exists='append', index=False)
+        
+        # Limpa o cache para a aba da Diretoria atualizar na hora
+        st.cache_data.clear()
+        return True, "Venda enviada para análise da diretoria!"
+    except Exception as e:
+        return False, f"Erro ao enviar: {e}"
+    finally:
+        session.close()
+
+    session = SessionLocal()
+    try:
+        nova_venda = pd.DataFrame([{
+            "Data_Solicitacao": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "id_vendedor": id_vendedor,
+            "id_gerente": id_gerente,
+            "cliente": cliente,
+            "administradora": adm,
+            "tipo_cota": produto,
+            "valor_credito": credito,
+            "grupo": 0,  # <-- BLINDAGEM 1: Força o MySQL a criar a coluna como INT
+            "cota": 0,   # <-- BLINDAGEM 1: Força o MySQL a criar a coluna como INT
+            "data_primeira_parcela": "", 
+            "status_aprovacao": "Rascunho" 
+        }])
+        
+        engine = session.get_bind()
+        nova_venda.to_sql('vendas_pendentes', con=engine, if_exists='append', index=False)
+        st.cache_data.clear()
+        return True, "Proposta salva na sua gaveta de rascunhos!"
+    except Exception as e:
+        return False, f"Erro ao salvar rascunho: {e}"
+    finally:
+        session.close()
+
+def completar_e_enviar_aprovacao(data_solicitacao, cliente, grupo, cota, data_primeira_parcela):
+    session = SessionLocal()
+    try:
+        query = text("""
+            UPDATE vendas_pendentes 
+            SET grupo = :grupo, cota = :cota, data_primeira_parcela = :data_parcela, status_aprovacao = 'Pendente' 
+            WHERE Data_Solicitacao = :data AND cliente = :cliente
+        """)
+        session.execute(query, {
+            "grupo": int(grupo), # <-- BLINDAGEM 2: Converte o texto da tela para INT matemático
+            "cota": int(cota),   # <-- BLINDAGEM 2: Converte o texto da tela para INT matemático
+            "data_parcela": data_primeira_parcela, 
+            "data": data_solicitacao, 
+            "cliente": cliente
+        })
+        session.commit()
+        st.cache_data.clear()
+        return True, "Venda enviada para aprovação do Backoffice!"
+    except ValueError:
+        return False, "⚠️ Erro: O Número do Grupo e da Cota devem conter apenas números (sem letras ou traços)!"
+    except Exception as e:
+        session.rollback()
+        return False, f"Erro ao enviar venda: {e}"
+    finally:
+        session.close()
+
+# --- FILA DE APROVAÇÕES E RASCUNHOS DE VENDAS ---
+def salvar_proposta_rascunho(id_vendedor, id_gerente, cliente, adm, produto, credito, prazo, taxa_adm):
+    session = SessionLocal()
+    try:
+        nova_venda = pd.DataFrame([{
+            "Data_Solicitacao": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "id_vendedor": id_vendedor,
+            "id_gerente": id_gerente,
+            "cliente": cliente,
+            "administradora": adm,
+            "tipo_cota": produto,
+            "valor_credito": credito,
+            "prazo": prazo,        # <--- NOVO: Prazo da Simulação
+            "taxa_adm": taxa_adm,  # <--- NOVO: Taxa da Simulação
+            "grupo": 0,  
+            "cota": 0,   
+            "data_primeira_parcela": "", 
+            "status_aprovacao": "Rascunho" 
+        }])
+        
+        engine = session.get_bind()
+        nova_venda.to_sql('vendas_pendentes', con=engine, if_exists='append', index=False)
+        st.cache_data.clear()
+        return True, "Proposta salva na sua gaveta de rascunhos!"
+    except Exception as e:
+        return False, f"Erro ao salvar rascunho: {e}"
+    finally:
+        session.close()
+
+def processar_decisao_venda(data_solicitacao, cliente, decisao):
+    session = SessionLocal()
+    try:
+        engine = session.get_bind()
+        q_ok = 0; q_ig = 0; log_entuba = None
+
+        if decisao == 'Aprovado':
+            df_venda = pd.read_sql(
+                f"SELECT * FROM vendas_pendentes WHERE Data_Solicitacao = '{data_solicitacao}' AND cliente = '{cliente}'", 
+                con=engine
+            ).head(1)
+            
+            df_entuba = df_venda.rename(columns={
+                'cliente': 'Cliente',
+                'id_vendedor': 'ID_Vendedor',
+                'id_gerente': 'ID_Gerente',
+                'tipo_cota': 'Tipo_Cota',
+                'valor_credito': 'Valor_Credito',
+                'prazo': 'Prazo',         # <--- NOVO
+                'taxa_adm': 'Taxa_Adm',   # <--- NOVO
+                'grupo': 'Grupo', 
+                'cota': 'Cota'    
+            })
+            
+            df_entuba['Data_Venda'] = pd.to_datetime(df_entuba['data_primeira_parcela']).dt.strftime('%d/%m/%Y')
+            df_entuba['Grupo'] = pd.to_numeric(df_entuba['Grupo'], errors='coerce').fillna(0).astype(int)
+            df_entuba['Cota'] = pd.to_numeric(df_entuba['Cota'], errors='coerce').fillna(0).astype(int)
+            
+            # Inclui o Prazo e a Taxa no pacote que vai para o Entuba
+            df_final = df_entuba[['Cliente', 'ID_Vendedor', 'ID_Gerente', 'Tipo_Cota', 'Valor_Credito', 'Prazo', 'Taxa_Adm', 'Data_Venda', 'Grupo', 'Cota']]
+            
+            q_ok, q_ig, log_entuba = processar_vendas_upload(df_final)
+            if q_ok == 0:
+                return False, "O Entuba rejeitou o lançamento. Verifique o log de erros.", q_ok, q_ig, log_entuba
+
+        query_update = text("UPDATE vendas_pendentes SET status_aprovacao = :decisao WHERE Data_Solicitacao = :data AND cliente = :cliente")
+        session.execute(query_update, {"decisao": decisao, "data": data_solicitacao, "cliente": cliente})
+        session.commit()
+            
+        st.cache_data.clear()
+        return True, f"Venda {decisao.lower()} com sucesso!", q_ok, q_ig, log_entuba
+        
+    except Exception as e:
+        session.rollback()
+        return False, f"Erro ao processar: {e}", 0, 0, None
     finally:
         session.close()
 
