@@ -10,6 +10,7 @@ from models import Lancamento, Usuario, Cliente, RegraComissao
 
 
 # --- MAPEAMENTO DE COLUNAS (SQL -> APP) ---
+# --- MAPEAMENTO DE COLUNAS (SQL -> APP) ---
 MAPA_SQL_APP = {
     'id_lancamento': 'ID_Lancamento', 'id_venda': 'ID_Venda', 'valor_cliente': 'Valor_Cliente',
     'administradora': 'Administradora', 'grupo': 'Grupo', 'cota': 'Cota', 'tipo_cota': 'Tipo_Cota',
@@ -17,12 +18,13 @@ MAPA_SQL_APP = {
     'data_real_recebimento': 'Data_Real_Recebimento', 'valor_recebido_real': 'Valor_Recebido_Real',
     'id_cliente': 'ID_Cliente', 'cliente': 'Cliente',
     'id_vendedor': 'ID_Vendedor', 'vendedor': 'Vendedor',
+    'id_supervisor': 'ID_Supervisor', 'supervisor': 'Supervisor',
     'id_gerente': 'ID_Gerente', 'gerente': 'Gerente',
     'receber_administradora': 'Receber_Administradora',
-    'pagar_vendedor': 'Pagar_Vendedor', 'pagar_gerente': 'Pagar_Gerente',
+    'pagar_vendedor': 'Pagar_Vendedor', 'pagar_supervisor': 'Pagar_Supervisor', 'pagar_gerente': 'Pagar_Gerente',
     'liquido_caixa': 'Liquido_Caixa',
     'status_recebimento': 'Status_Recebimento', 'status_pgto_cliente': 'Status_Pgto_Cliente',
-    'status_pgto_vendedor': 'Status_Pgto_Vendedor', 'status_pgto_gerente': 'Status_Pgto_Gerente',
+    'status_pgto_vendedor': 'Status_Pgto_Vendedor', 'status_pgto_supervisor': 'Status_Pgto_Supervisor', 'status_pgto_gerente': 'Status_Pgto_Gerente',
     'obs': 'Obs'
 }
 
@@ -140,13 +142,24 @@ def carregar_meus_rascunhos(id_vendedor):
         session.close()
 
 # --- ESCRITA ---
-def adicionar_novo_usuario(id_u, nome, user, senha, tipo, tv, tg):
+def adicionar_novo_usuario(id_u, nome, user, senha, tipo, tv, ts, tg, id_sup, id_ger):
     session = SessionLocal()
     try:
-        # Verifica user limpo
         user_clean = str(user).strip()
         existe = session.query(Usuario).filter((Usuario.id_usuario == str(id_u)) | (Usuario.username == user_clean)).first()
         if existe: return False, "ID ou Usuário já existe."
+        
+        # Garante que IDs de hierarquia fiquem limpos
+        id_sup = limpar_id(id_sup)
+        id_ger = limpar_id(id_ger)
+        
+        # --- LÓGICA DE AUTO-VINCULAÇÃO (CASCATA) ---
+        # Se você selecionou um supervisor, o sistema ignora o gerente da tela e puxa o gerente do supervisor!
+        if id_sup:
+            supervisor_banco = session.query(Usuario).filter(Usuario.id_usuario == id_sup).first()
+            if supervisor_banco and supervisor_banco.id_gerente:
+                id_ger = supervisor_banco.id_gerente
+        # -------------------------------------------
         
         novo = Usuario(
             id_usuario=str(id_u), 
@@ -155,7 +168,10 @@ def adicionar_novo_usuario(id_u, nome, user, senha, tipo, tv, tg):
             nome_completo=str(nome).strip(), 
             tipo_acesso=str(tipo), 
             taxa_vendedor=float(tv), 
-            taxa_gerencia=float(tg)
+            taxa_supervisor=float(ts),
+            taxa_gerencia=float(tg),
+            id_supervisor=id_sup,
+            id_gerente=id_ger
         )
         session.add(novo); session.commit()
         st.cache_data.clear()
@@ -262,8 +278,13 @@ def processar_vendas_upload(df):
     
     df_u = carregar_usuarios_df()
     map_u = dict(zip(df_u['id_usuario'], df_u['nome_completo']))
-    map_tv = dict(zip(df_u['id_usuario'], pd.to_numeric(df_u['taxa_vendedor']).fillna(0.2)))
-    map_tg = dict(zip(df_u['id_usuario'], pd.to_numeric(df_u['taxa_gerencia']).fillna(0.1)))
+    map_tv = dict(zip(df_u['id_usuario'], pd.to_numeric(df_u.get('taxa_vendedor', 0.2)).fillna(0.2)))
+    map_ts = dict(zip(df_u['id_usuario'], pd.to_numeric(df_u.get('taxa_supervisor', 0.1)).fillna(0.1))) # <-- NOVO
+    map_tg = dict(zip(df_u['id_usuario'], pd.to_numeric(df_u.get('taxa_gerencia', 0.1)).fillna(0.1)))
+    
+    # Mapas de Inteligência (Puxa quem é o chefe do Vendedor)
+    map_sup_link = dict(zip(df_u['id_usuario'], df_u.get('id_supervisor', pd.Series([''] * len(df_u))).fillna('')))
+    map_ger_link = dict(zip(df_u['id_usuario'], df_u.get('id_gerente', pd.Series([''] * len(df_u))).fillna('')))
     
     df_c = carregar_clientes()
     map_cid = dict(zip(df_c['id_cliente'], df_c['nome_completo']))
@@ -291,10 +312,17 @@ def processar_vendas_upload(df):
         reg_c = regras_completas.get(tipo, {}) 
         
         iv = limpar_id(row.get('id_vendedor'))
-        ig = limpar_id(row.get('id_gerente'))
         if iv not in map_u: 
             logs.append({'Linha': linha_excel, 'Cliente': cliente_nome, 'Status': '❌ Erro', 'Detalhe': f'Vendedor ID {iv} inexistente'})
             continue
+            
+        # --- PREENCHIMENTO AUTOMÁTICO DA HIERARQUIA ---
+        isup = map_sup_link.get(iv)
+        ig = map_ger_link.get(iv)
+        
+        # Caso a planilha venha com um gerente forçado, ele acata. Se não, usa o automático do banco.
+        if not isup and 'id_supervisor' in row: isup = limpar_id(row.get('id_supervisor'))
+        if not ig and 'id_gerente' in row: ig = limpar_id(row.get('id_gerente'))
         
         cnm = cliente_nome
         cid_xls = limpar_id(row.get('id_cliente'))
@@ -313,7 +341,7 @@ def processar_vendas_upload(df):
         grp = str(row.get('grupo')).replace('.0',''); cta = str(row.get('cota')).replace('.0','')
         idv = f"{reg.get('admin', reg_c.get('administradora', ''))}_{grp}_{cta}"
         
-        try: dtv = pd.to_datetime(row['data_venda'])
+        try: dtv = pd.to_datetime(row['data_venda'], dayfirst=True)
         except: logs.append({'Linha': linha_excel, 'Cliente': cnm, 'Status': '❌ Erro', 'Detalhe': 'Data inválida'}); continue
 
         dc = int(row.get('dia_vencimento', 15))
@@ -356,36 +384,42 @@ def processar_vendas_upload(df):
         
         for i in range(total_parcelas_fixo):
             idl = f"{idv}_P{i+1}"
-            
             if idl in exist: 
-                ign += 1
-                continue
+                ign += 1; continue
             
             dp = dtv if i==0 else dtv+relativedelta(months=i+sh)
             pct = pcts[i] if i < len(pcts) else 0.0
             
-            # Define o valor e o status baseados em ser a primeira ou não
             valor_cliente_atual = primeira_parcela if i == 0 else parcela_normal
-            status_pg_cli = 'Pago' if i == 0 else 'Pendente' # <--- A primeira parcela já entra paga!
+            status_pg_cli = 'Pago' if i == 0 else 'Pendente'
+            
+            # --- NOVO: STATUS INTELIGENTE ---
+            status_pg_sup = 'Pendente' if isup else 'Isento'
+            status_pg_ger = 'Pendente' if ig else 'Isento'
             
             vb = vcred * (pct/100)
             pv = vb * map_tv.get(iv, 0.2)
-            pg = vb * map_tg.get(ig, 0.1)
+            ps = vb * map_ts.get(isup, 0.1) if isup else 0.0
+            pg = vb * map_tg.get(ig, 0.1) if ig else 0.0
             
             novos.append(Lancamento(
                 id_lancamento=idl, id_venda=idv, administradora=reg.get('admin', reg_c.get('administradora')),
                 grupo=grp, cota=cta, tipo_cota=tipo, 
                 parcela=f"{i+1}/{total_parcelas_fixo}",
                 data_previsao=dp.date(), id_cliente=cid_final, cliente=cnm,
-                id_vendedor=iv, vendedor=map_u[iv], id_gerente=ig, gerente=map_u.get(ig,''), 
+                id_vendedor=iv, vendedor=map_u.get(iv,''), 
+                id_supervisor=isup, supervisor=map_u.get(isup,''),
+                id_gerente=ig, gerente=map_u.get(ig,''), 
                 valor_cliente=round(valor_cliente_atual, 2), 
-                receber_administradora=round(vb,2), pagar_vendedor=round(pv,2), pagar_gerente=round(pg,2),
-                liquido_caixa=round(vb-pv-pg,2), status_recebimento='Pendente', 
-                status_pgto_cliente=status_pg_cli  # <--- Salva o status predefinido
+                receber_administradora=round(vb,2), 
+                pagar_vendedor=round(pv,2), pagar_supervisor=round(ps,2), pagar_gerente=round(pg,2),
+                liquido_caixa=round(vb-pv-ps-pg, 2), 
+                status_recebimento='Pendente', status_pgto_cliente=status_pg_cli,
+                status_pgto_vendedor='Pendente', 
+                status_pgto_supervisor=status_pg_sup, # Recebe 'Isento' se vazio
+                status_pgto_gerente=status_pg_ger     # Recebe 'Isento' se vazio
             ))
-            exist.add(idl)
-            parcelas_criadas_na_linha += 1
-            ok += 1
+            exist.add(idl); parcelas_criadas_na_linha += 1; ok += 1
         
         if parcelas_criadas_na_linha > 0:
             logs.append({'Linha': linha_excel, 'Cliente': cnm, 'Status': '✅ Sucesso', 'Detalhe': f'{parcelas_criadas_na_linha} parcelas geradas'})
@@ -774,16 +808,24 @@ def processar_edicao_lote(df):
 
         # Recálculo de comissão
         if recalc_financeiro:
-            tv = users[l.id_vendedor].taxa_vendedor if l.id_vendedor in users else 0.20
-            tg = users[l.id_gerente].taxa_gerencia if l.id_gerente in users else 0.10
+            tv = users[l.id_vendedor].taxa_vendedor if l.id_vendedor and l.id_vendedor in users else 0.20
+            ts = users[l.id_supervisor].taxa_supervisor if l.id_supervisor and l.id_supervisor in users else 0.10
+            tg = users[l.id_gerente].taxa_gerencia if l.id_gerente and l.id_gerente in users else 0.10
             
             try: r = float(l.receber_administradora)
             except: r = 0.0
             
             l.pagar_vendedor = r * tv
-            l.pagar_gerente = r * tg
-            l.liquido_caixa = r - l.pagar_vendedor - l.pagar_gerente
-            # Não precisa logar o recálculo para não poluir, pois já logou a mudança que causou isso
+            l.pagar_supervisor = r * ts if l.id_supervisor else 0.0
+            l.pagar_gerente = r * tg if l.id_gerente else 0.0
+            l.liquido_caixa = r - l.pagar_vendedor - l.pagar_supervisor - l.pagar_gerente
+
+            # --- NOVO: REAJUSTE DE STATUS AUTOMÁTICO ---
+            if not l.id_supervisor: l.status_pgto_supervisor = 'Isento'
+            elif l.status_pgto_supervisor == 'Isento': l.status_pgto_supervisor = 'Pendente'
+            
+            if not l.id_gerente: l.status_pgto_gerente = 'Isento'
+            elif l.status_pgto_gerente == 'Isento': l.status_pgto_gerente = 'Pendente'
 
     if count_alterados > 0:
         try:
@@ -882,6 +924,44 @@ def alterar_senha_usuario(id_user, nova_senha):
     finally:
         session.close()
 
+def atualizar_vinculo_usuario(id_u, id_sup, id_ger):
+    session = SessionLocal()
+    try:
+        usuario = session.query(Usuario).filter(Usuario.id_usuario == str(id_u)).first()
+        if not usuario: return False, "Usuário não encontrado."
+        
+        # Limpa os IDs recebidos
+        id_sup = limpar_id(id_sup)
+        id_ger = limpar_id(id_ger)
+        
+        # --- LÓGICA DE AUTO-VINCULAÇÃO (CASCATA PARA CIMA) ---
+        # Se escolheu um novo supervisor, herda o gerente dele
+        if id_sup:
+            supervisor_banco = session.query(Usuario).filter(Usuario.id_usuario == id_sup).first()
+            if supervisor_banco and supervisor_banco.id_gerente:
+                id_ger = supervisor_banco.id_gerente
+                
+        # Atualiza os dados do usuário alvo
+        usuario.id_supervisor = id_sup
+        usuario.id_gerente = id_ger
+        
+        # --- LÓGICA DE AUTO-VINCULAÇÃO (CASCATA PARA BAIXO) ---
+        # Se o usuário que mudou de equipe for um Supervisor, 
+        # atualiza automaticamente o Gerente de todos os vendedores que estão abaixo dele!
+        if usuario.tipo_acesso == 'Supervisor':
+            vendedores_abaixo = session.query(Usuario).filter(Usuario.id_supervisor == str(id_u)).all()
+            for vend in vendedores_abaixo:
+                vend.id_gerente = id_ger # Repassa o novo gerente para a base
+                
+        session.commit()
+        st.cache_data.clear()
+        return True, f"✅ Vínculos de {usuario.nome_completo} atualizados com sucesso!"
+    except Exception as e: 
+        session.rollback()
+        return False, f"Erro ao atualizar vínculo: {e}"
+    finally: 
+        session.close()
+
 # --- FILA DE APROVAÇÕES DE VENDAS ---
 def enviar_venda_aprovacao(id_vendedor, id_gerente, cliente, adm, produto, credito):
     # Cria o DataFrame com a venda
@@ -935,49 +1015,45 @@ def enviar_venda_aprovacao(id_vendedor, id_gerente, cliente, adm, produto, credi
     finally:
         session.close()
 
-def completar_e_enviar_aprovacao(data_solicitacao, cliente, grupo, cota, data_primeira_parcela):
+def completar_e_enviar_aprovacao(data_solicitacao, cliente, grupo, cota, data_primeira_parcela, dia_vencimento):
     session = SessionLocal()
     try:
         query = text("""
             UPDATE vendas_pendentes 
-            SET grupo = :grupo, cota = :cota, data_primeira_parcela = :data_parcela, status_aprovacao = 'Pendente' 
+            SET grupo = :grupo, cota = :cota, data_primeira_parcela = :data_parcela, dia_vencimento = :dia_vencimento, status_aprovacao = 'Pendente' 
             WHERE Data_Solicitacao = :data AND cliente = :cliente
         """)
         session.execute(query, {
-            "grupo": int(grupo), # <-- BLINDAGEM 2: Converte o texto da tela para INT matemático
-            "cota": int(cota),   # <-- BLINDAGEM 2: Converte o texto da tela para INT matemático
+            "grupo": int(grupo), "cota": int(cota), 
             "data_parcela": data_primeira_parcela, 
-            "data": data_solicitacao, 
-            "cliente": cliente
+            "dia_vencimento": int(dia_vencimento),  # <--- ATUALIZANDO O BANCO
+            "data": data_solicitacao, "cliente": cliente
         })
-        session.commit()
-        st.cache_data.clear()
+        session.commit(); st.cache_data.clear()
         return True, "Venda enviada para aprovação do Backoffice!"
-    except ValueError:
-        return False, "⚠️ Erro: O Número do Grupo e da Cota devem conter apenas números (sem letras ou traços)!"
-    except Exception as e:
-        session.rollback()
-        return False, f"Erro ao enviar venda: {e}"
-    finally:
-        session.close()
+    except ValueError: return False, "⚠️ Erro: O Número do Grupo, Cota e Vencimento devem conter apenas números!"
+    except Exception as e: session.rollback(); return False, f"Erro ao enviar venda: {e}"
+    finally: session.close()
 
 # --- FILA DE APROVAÇÕES E RASCUNHOS DE VENDAS ---
-def salvar_proposta_rascunho(id_vendedor, id_gerente, cliente, adm, produto, credito, prazo, taxa_adm):
+def salvar_proposta_rascunho(id_vendedor, id_supervisor, id_gerente, cliente, adm, produto, credito, prazo, taxa_adm):
     session = SessionLocal()
     try:
         nova_venda = pd.DataFrame([{
             "Data_Solicitacao": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "id_vendedor": id_vendedor,
+            "id_supervisor": id_supervisor,
             "id_gerente": id_gerente,
             "cliente": cliente,
             "administradora": adm,
             "tipo_cota": produto,
             "valor_credito": credito,
-            "prazo": prazo,        # <--- NOVO: Prazo da Simulação
-            "taxa_adm": taxa_adm,  # <--- NOVO: Taxa da Simulação
+            "prazo": prazo,        
+            "taxa_adm": taxa_adm,  
             "grupo": 0,  
             "cota": 0,   
             "data_primeira_parcela": "", 
+            "dia_vencimento": 15,
             "status_aprovacao": "Rascunho" 
         }])
         
@@ -1005,21 +1081,23 @@ def processar_decisao_venda(data_solicitacao, cliente, decisao):
             df_entuba = df_venda.rename(columns={
                 'cliente': 'Cliente',
                 'id_vendedor': 'ID_Vendedor',
-                'id_gerente': 'ID_Gerente',
+                'id_supervisor': 'ID_Supervisor', 
+                'id_gerente': 'ID_Gerente',       
                 'tipo_cota': 'Tipo_Cota',
                 'valor_credito': 'Valor_Credito',
-                'prazo': 'Prazo',         # <--- NOVO
-                'taxa_adm': 'Taxa_Adm',   # <--- NOVO
+                'prazo': 'Prazo',         
+                'taxa_adm': 'Taxa_Adm',   
                 'grupo': 'Grupo', 
-                'cota': 'Cota'    
+                'cota': 'Cota',
+                'dia_vencimento': 'dia_vencimento'
             })
             
             df_entuba['Data_Venda'] = pd.to_datetime(df_entuba['data_primeira_parcela']).dt.strftime('%d/%m/%Y')
             df_entuba['Grupo'] = pd.to_numeric(df_entuba['Grupo'], errors='coerce').fillna(0).astype(int)
             df_entuba['Cota'] = pd.to_numeric(df_entuba['Cota'], errors='coerce').fillna(0).astype(int)
             
-            # Inclui o Prazo e a Taxa no pacote que vai para o Entuba
-            df_final = df_entuba[['Cliente', 'ID_Vendedor', 'ID_Gerente', 'Tipo_Cota', 'Valor_Credito', 'Prazo', 'Taxa_Adm', 'Data_Venda', 'Grupo', 'Cota']]
+            # Inclui o dia_vencimento no pacote que vai para o Entuba
+            df_final = df_entuba[['Cliente', 'ID_Vendedor', 'ID_Supervisor', 'ID_Gerente', 'Tipo_Cota', 'Valor_Credito', 'Prazo', 'Taxa_Adm', 'Data_Venda', 'Grupo', 'Cota', 'dia_vencimento']]
             
             q_ok, q_ig, log_entuba = processar_vendas_upload(df_final)
             if q_ok == 0:
@@ -1037,4 +1115,5 @@ def processar_decisao_venda(data_solicitacao, cliente, decisao):
         return False, f"Erro ao processar: {e}", 0, 0, None
     finally:
         session.close()
+
 

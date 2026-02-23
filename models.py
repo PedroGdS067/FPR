@@ -13,6 +13,9 @@ class Usuario(Base):
     tipo_acesso = Column(String(50))
     taxa_vendedor = Column(Float)
     taxa_gerencia = Column(Float)
+    taxa_supervisor = Column(Float)
+    id_supervisor = Column(String(50), nullable=True)
+    id_gerente = Column(String(50), nullable=True)
 
 class Cliente(Base):
     __tablename__ = 'clientes'
@@ -74,17 +77,21 @@ class Lancamento(Base):
     cliente = Column(String(150))
     id_vendedor = Column(String(50))
     vendedor = Column(String(150))
+    id_supervisor = Column(String(50))
+    supervisor = Column(String(150))
     id_gerente = Column(String(50))
     gerente = Column(String(150))
     
     receber_administradora = Column(Float, default=0.0)
     pagar_vendedor = Column(Float, default=0.0)
+    pagar_supervisor = Column(Float, default=0.0)
     pagar_gerente = Column(Float, default=0.0)
     liquido_caixa = Column(Float, default=0.0)
     
     status_recebimento = Column(String(50), default='Pendente')
     status_pgto_cliente = Column(String(50), default='Pendente')
     status_pgto_vendedor = Column(String(50), default='Pendente')
+    status_pgto_supervisor = Column(String(50), default='Pendente')
     status_pgto_gerente = Column(String(50), default='Pendente')
     
     obs = Column(Text)

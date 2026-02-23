@@ -161,16 +161,16 @@ def main():
     # "🕵️ Auditoria": ['Master'] aqui embaixo!
     
     PERMISSOES = {
-        "📊 Dashboard":         ['Master', 'Administrativo', 'Financeiro', 'Gerente', 'Vendedor'],
-        "💡 Simulador":         ['Master', 'Administrativo', 'Financeiro', 'Gerente', 'Vendedor'],
-        "📝 Minhas Propostas":  ['Master', 'Administrativo', 'Financeiro', 'Gerente', 'Vendedor'],
+        "📊 Dashboard":         ['Master', 'Administrativo', 'Financeiro', 'Gerente', 'Supervisor', 'Vendedor'],
+        "💡 Simulador":         ['Master', 'Administrativo', 'Financeiro', 'Gerente', 'Supervisor', 'Vendedor'],
+        "📝 Minhas Propostas":  ['Master', 'Administrativo', 'Financeiro', 'Gerente', 'Supervisor', 'Vendedor'],
         "⏳ Aprovações":        ['Master', 'Administrativo'],
         "📥 Entuba":            ['Master', 'Administrativo'],
         "🏦 Conciliação":       ['Master', 'Administrativo'], 
         "❌ Cancelamentos":     ['Master', 'Administrativo'], 
         "👥 Usuários":          ['Master', 'Administrativo'],
         "⚙️ Regras":            ['Master', 'Administrativo'],
-        "📇 Clientes":          ['Master', 'Administrativo', 'Financeiro', 'Gerente', 'Vendedor'],
+        "📇 Clientes":          ['Master', 'Administrativo', 'Financeiro', 'Gerente', 'Supervisor', 'Vendedor'],
         "🛠️ Ajustes":           ['Master', 'Administrativo'],
         "📄 Parcelas Clientes": ['Master', 'Administrativo', 'Financeiro'],
         "💸 Comissões":         ['Master', 'Administrativo', 'Financeiro']
@@ -214,25 +214,28 @@ def main():
 
             # Prepara filtros e limpezas
             df['Vendedor'] = df['Vendedor'].fillna('').astype(str)
+            df['Supervisor'] = df.get('Supervisor', pd.Series([''] * len(df))).fillna('').astype(str)
             df['Gerente'] = df['Gerente'].fillna('').astype(str)
             df['Cliente'] = df['Cliente'].fillna('').astype(str)
             df['Administradora'] = df['Administradora'].fillna('').astype(str)
+            
             df['ID_Vendedor'] = df['ID_Vendedor'].fillna('0').astype(str).str.replace('.0','', regex=False)
+            df['ID_Supervisor'] = df.get('ID_Supervisor', pd.Series(['0'] * len(df))).fillna('0').astype(str).str.replace('.0','', regex=False)
             df['ID_Gerente'] = df['ID_Gerente'].fillna('0').astype(str).str.replace('.0','', regex=False)
             df['Data_Previsao'] = pd.to_datetime(df['Data_Previsao'], errors='coerce')
             df['Mes_Referencia'] = df['Data_Previsao'].dt.strftime('%m/%Y')
 
             # Previne erros de NA nos filtros de status
-            for col_st in ['Status_Recebimento', 'Status_Pgto_Cliente', 'Status_Pgto_Vendedor', 'Status_Pgto_Gerente']:
+            for col_st in ['Status_Recebimento', 'Status_Pgto_Cliente', 'Status_Pgto_Vendedor', 'Status_Pgto_Supervisor', 'Status_Pgto_Gerente']:
                 if col_st in df.columns:
                     df[col_st] = df[col_st].fillna('Pendente').astype(str)
 
             meu_id = st.session_state['id_usuario']
             dfv = df.copy()
             
-            # Row Level Security (Segurança por Linha)
+            # Row Level Security (Segurança por Linha agora inclui Supervisor)
             if cargo_atual not in ['Master', 'Administrativo', 'Financeiro']:
-                dfv = dfv[(dfv['ID_Vendedor'] == meu_id) | (dfv['ID_Gerente'] == meu_id)]
+                dfv = dfv[(dfv['ID_Vendedor'] == meu_id) | (dfv['ID_Supervisor'] == meu_id) | (dfv['ID_Gerente'] == meu_id)]
                 
             # Calcula a métrica principal de visualização
             dfv['Minha_Comissao'] = 0.0
@@ -240,8 +243,10 @@ def main():
                 dfv['Minha_Comissao'] = dfv['Liquido_Caixa']
             else:
                 m_v = dfv['ID_Vendedor'] == meu_id
+                m_s = dfv['ID_Supervisor'] == meu_id
                 m_g = dfv['ID_Gerente'] == meu_id
                 if 'Pagar_Vendedor' in dfv: dfv.loc[m_v, 'Minha_Comissao'] += dfv.loc[m_v, 'Pagar_Vendedor']
+                if 'Pagar_Supervisor' in dfv: dfv.loc[m_s, 'Minha_Comissao'] += dfv.loc[m_s, 'Pagar_Supervisor']
                 if 'Pagar_Gerente' in dfv: dfv.loc[m_g, 'Minha_Comissao'] += dfv.loc[m_g, 'Pagar_Gerente']
                 dfv = dfv[dfv['Minha_Comissao'] != 0]
 
@@ -337,17 +342,16 @@ def main():
                 cols_view = [
                     'ID_Lancamento', 'ID_Venda', 'Data_Previsao', 'Administradora', 
                     'Cliente', 'Status_Pgto_Cliente', 'Grupo', 'Cota', 'Parcela', 
-                    'Valor_Cliente', 'Receber_Administradora', 'Pagar_Vendedor', 'Pagar_Gerente', 
+                    'Valor_Cliente', 'Receber_Administradora', 'Pagar_Vendedor', 'Pagar_Supervisor', 'Pagar_Gerente', 
                     'Liquido_Caixa', 'Status_Recebimento', 
-                    'Vendedor', 'Status_Pgto_Vendedor', 'Gerente', 'Status_Pgto_Gerente', 
-                    'ID_Vendedor', 'ID_Gerente'
+                    'Vendedor', 'Status_Pgto_Vendedor', 'Supervisor', 'Status_Pgto_Supervisor', 'Gerente', 'Status_Pgto_Gerente'
                 ]
             else:
-                # Vendedor/Gerente mantêm a visão enxuta para focar no seu comercial
+                # Vendedor/Supervisor/Gerente mantêm a visão enxuta para focar no seu comercial
                 cols_view = [
                     'Data_Previsao', 'Administradora', 'Cliente', 'Status_Pgto_Cliente',
                     'Grupo', 'Cota', 'Parcela', 'Minha_Comissao', 'Status_Recebimento',
-                    'Vendedor', 'Status_Pgto_Vendedor', 'Gerente', 'Status_Pgto_Gerente'
+                    'Vendedor', 'Supervisor', 'Gerente'
                 ]
             
             # Garante que as colunas existem
@@ -391,6 +395,7 @@ def main():
                     "Valor_Cliente": st.column_config.NumberColumn("Valor Cliente", format="R$ %.2f", help="Valor de 0.5% ref. parcela do cliente"),
                     "Receber_Administradora": st.column_config.NumberColumn("Comissão Empresa", format="R$ %.2f", help="Total da comissão que a FPR recebe"),
                     "Pagar_Vendedor": st.column_config.NumberColumn("Comissão Vendedor", format="R$ %.2f"),
+                    "Pagar_Supervisor": st.column_config.NumberColumn("Comissão Supervisor", format="R$ %.2f"),
                     "Pagar_Gerente": st.column_config.NumberColumn("Comissão Gerente", format="R$ %.2f"),
                     "Liquido_Caixa": st.column_config.NumberColumn("Caixa Empresa", format="R$ %.2f"),
                     "Minha_Comissao": st.column_config.NumberColumn("Minha Comissão", format="R$ %.2f"),
@@ -398,6 +403,7 @@ def main():
                     "Status_Recebimento": st.column_config.TextColumn("Status Admin", help="Se a FPR já recebeu da Administradora"),
                     "Status_Pgto_Cliente": st.column_config.TextColumn("Pgto Cliente", help="Status do boleto do cliente"),
                     "Status_Pgto_Vendedor": st.column_config.TextColumn("Pgto Vendedor", help="Status do repasse ao vendedor"),
+                    "Status_Pgto_Supervisor": st.column_config.TextColumn("Pgto Supervisor", help="Status do repasse ao supervisor"),
                     "Status_Pgto_Gerente": st.column_config.TextColumn("Pgto Gerente", help="Status do repasse ao gerente")
                 }
             )
@@ -672,7 +678,7 @@ def main():
                 if not dfu.empty:
                     # Configuração visual da tabela
                     st.dataframe(
-                        dfu[['id_usuario', 'nome_completo', 'username', 'tipo_acesso', 'taxa_vendedor', 'taxa_gerencia']], 
+                        dfu[['id_usuario', 'nome_completo', 'username', 'tipo_acesso', 'taxa_vendedor', 'taxa_supervisor', 'taxa_gerencia', 'id_supervisor', 'id_gerente']],
                         use_container_width=True,
                         hide_index=True,
                         column_config={
@@ -682,14 +688,17 @@ def main():
                             "tipo_acesso": st.column_config.TextColumn("Perfil"),
                             # Multiplica por 100 apenas na exibição visual para ficar fácil de ler (ex: 20%)
                             "taxa_vendedor": st.column_config.NumberColumn("Tx Vendedor", format="%.2f"),
-                            "taxa_gerencia": st.column_config.NumberColumn("Tx Gerente", format="%.2f")
+                            "taxa_supervisor": st.column_config.NumberColumn("Tx Supervisor", format="%.2f"),
+                            "taxa_gerencia": st.column_config.NumberColumn("Tx Gerente", format="%.2f"),
+                            "id_supervisor": st.column_config.TextColumn("Supervisor Chefe"),
+                            "id_gerente": st.column_config.TextColumn("Gerente Chefe")
                         }
                     )
                 else:
                     st.warning("Nenhum usuário encontrado.")
 
             with cf:
-                tab_n, tab_s, tab_e = st.tabs(["➕ Novo Usuário", "🔑 Resetar Senha", "🗑️ Excluir"])
+                tab_n, tab_v, tab_s, tab_e = st.tabs(["➕ Novo Usuário", "🔗 Editar Vínculo", "🔑 Resetar Senha", "🗑️ Excluir"])
                 
                 # --- SUB-ABA: NOVO USUÁRIO ---
                 with tab_n:
@@ -703,24 +712,62 @@ def main():
                         lg = c3.text_input("Login de Acesso")
                         pw = c4.text_input("Senha Inicial", type="password")
                         
-                        st.markdown("**Permissões e Comissões**")
-                        tp = st.selectbox("Perfil de Acesso", ["Vendedor", "Gerente", "Administrativo", "Financeiro", "Master"])
+                        st.markdown("**Permissões, Hierarquia e Comissões**")
+                        tp = st.selectbox("Perfil de Acesso", ["Vendedor", "Supervisor", "Gerente", "Administrativo", "Financeiro", "Master"])
                         
-                        c5, c6 = st.columns(2)
-                        tv = c5.number_input("Tx Vend (Ex: 0.20 = 20%)", value=0.20, step=0.01, help="Taxa padrão que o vendedor recebe sobre a comissão da administradora.")
-                        tg = c6.number_input("Tx Ger (Ex: 0.10 = 10%)", value=0.10, step=0.01, help="Taxa padrão que o gerente recebe sobre a comissão da administradora.")
+                        # Listas para o usuário vincular as chefias
+                        lista_sup = [""] + dfu[dfu['tipo_acesso'] == 'Supervisor']['id_usuario'].tolist() if not dfu.empty else [""]
+                        lista_ger = [""] + dfu[dfu['tipo_acesso'] == 'Gerente']['id_usuario'].tolist() if not dfu.empty else [""]
+                        
+                        c_h1, c_h2 = st.columns(2)
+                        
+                        # Explicação na tela para orientar o Administrativo
+                        id_sup_v = c_h1.selectbox("Responde ao Supervisor (ID)", lista_sup, help="Selecione o Supervisor. O sistema puxará o Gerente automaticamente.")
+                        id_ger_v = c_h2.selectbox("Responde ao Gerente (ID)", lista_ger, help="Deixe em branco se já selecionou um Supervisor.")
+                        
+                        c5, c6, c7 = st.columns(3)
+                        tv = c5.number_input("Tx Vend (Ex: 0.20)", value=0.20, step=0.01)
+                        ts = c6.number_input("Tx Sup (Ex: 0.10)", value=0.10, step=0.01)
+                        tg = c7.number_input("Tx Ger (Ex: 0.10)", value=0.10, step=0.01)
                         
                         if st.form_submit_button("Criar Usuário", type="primary", use_container_width=True):
                             if uid and nm and lg and pw:
-                                ok, msg = backend.adicionar_novo_usuario(uid, nm, lg, pw, tp, tv, tg)
+                                ok, msg = backend.adicionar_novo_usuario(uid, nm, lg, pw, tp, tv, ts, tg, id_sup_v, id_ger_v)
                                 if ok:
                                     st.success(msg)
                                     time.sleep(1)
                                     st.rerun()
-                                else:
-                                    st.error(msg)
+                                else: st.error(msg)
+                            else: st.warning("Por favor, preencha todos os campos obrigatórios.")
+
+                # --- SUB-ABA: EDITAR VÍNCULOS ---
+                with tab_v:
+                    st.markdown("**Transferência de Equipe (Hierarquia)**")
+                    st.info("Altere o Supervisor ou Gerente de um colaborador. O sistema ajustará as futuras vendas automaticamente.")
+                    
+                    if not dfu.empty:
+                        # Seleciona qual usuário vai mudar de equipe
+                        user_edit = st.selectbox("Selecione o Colaborador", dfu.apply(lambda x: f"{x['id_usuario']} - {x['nome_completo']} ({x['tipo_acesso']})", axis=1), key='s_edit_v')
+                        
+                        # Recria as listas de líderes disponíveis
+                        lista_sup_edit = [""] + dfu[dfu['tipo_acesso'] == 'Supervisor']['id_usuario'].tolist() if not dfu.empty else [""]
+                        lista_ger_edit = [""] + dfu[dfu['tipo_acesso'] == 'Gerente']['id_usuario'].tolist() if not dfu.empty else [""]
+                        
+                        c_v1, c_v2 = st.columns(2)
+                        novo_sup = c_v1.selectbox("Novo Supervisor (ID)", lista_sup_edit, key='n_sup', help="Opcional")
+                        novo_ger = c_v2.selectbox("Novo Gerente (ID)", lista_ger_edit, key='n_ger', help="Deixe vazio se escolher um supervisor.")
+                        
+                        if st.button("🔄 Atualizar Vínculos", type="primary", use_container_width=True):
+                            id_alvo_v = user_edit.split(' - ')[0]
+                            ok, msg = backend.atualizar_vinculo_usuario(id_alvo_v, novo_sup, novo_ger)
+                            if ok:
+                                st.success(msg)
+                                time.sleep(1)
+                                st.rerun()
                             else:
-                                st.warning("Por favor, preencha todos os campos de texto.")
+                                st.error(msg)
+                    else:
+                        st.warning("Nenhum usuário cadastrado.")
 
                 # --- SUB-ABA: RESET DE SENHA ---
                 with tab_s:
@@ -1291,6 +1338,18 @@ def main():
                         'Cx': r['Status_Recebimento'],
                         'Referência': contexto_venda
                     })
+                
+                # Coleta Supervisor
+                if str(r.get('Status_Pgto_Supervisor', 'Pendente')) == t and r.get('Pagar_Supervisor', 0) > 0:
+                    rows.append({
+                        'ID': r['ID_Lancamento'], 
+                        'Tipo': 'Supervisor', 
+                        'Nome': r['Supervisor'], 
+                        'Valor': r['Pagar_Supervisor'], 
+                        'Cx': r['Status_Recebimento'],
+                        'Referência': contexto_venda
+                    })
+                
                 # Coleta Gerente
                 if str(r.get('Status_Pgto_Gerente', 'Pendente')) == t and r.get('Pagar_Gerente', 0) > 0:
                     rows.append({
@@ -1556,27 +1615,38 @@ def main():
             st.warning("Gostou da simulação? Salve como rascunho. Quando o cliente assinar e pagar a adesão, você poderá preencher o Grupo e a Cota na aba 'Minhas Propostas'.")
             
             with st.form("form_solicitar_venda", clear_on_submit=True):
-                col_f1, col_f2 = st.columns(2)
-                nome_cli = col_f1.text_input("Nome Completo do Cliente *")
-                id_ger = col_f2.text_input("ID do Gerente (Opcional)")
+                # Pedimos apenas o cliente. A inteligência do banco resolve o resto!
+                nome_cli = st.text_input("Nome Completo do Cliente *")
                 
                 if st.form_submit_button("Salvar na Gaveta de Propostas", type="primary", use_container_width=True):
-                            if nome_cli:
-                                meu_id_vend = st.session_state['id_usuario']
-                                ok, msg = backend.salvar_proposta_rascunho(
-                                    id_vendedor=meu_id_vend,
-                                    id_gerente=id_ger if id_ger else None,
-                                    cliente=nome_cli,
-                                    adm=regra['administradora'],
-                                    produto=produto_sel,
-                                    credito=credito_escolhido,
-                                    prazo=prazo_escolhido,
-                                    taxa_adm=taxa_adm_escolhida
-                                )
-                                if ok: st.success(msg)
-                                else: st.error(msg)
-                            else:
-                                st.error("O Nome do Cliente é obrigatório.")
+                    if nome_cli:
+                        meu_id_vend = st.session_state['id_usuario']
+                        
+                        # Tenta puxar a hierarquia dele no banco
+                        df_u_sim = backend.carregar_usuarios_df()
+                        meu_info = df_u_sim[df_u_sim['id_usuario'].astype(str) == str(meu_id_vend)]
+                        
+                        meu_sup = None
+                        meu_ger = None
+                        if not meu_info.empty:
+                            meu_sup = meu_info.iloc[0].get('id_supervisor')
+                            meu_ger = meu_info.iloc[0].get('id_gerente')
+                        
+                        ok, msg = backend.salvar_proposta_rascunho(
+                            id_vendedor=meu_id_vend,
+                            id_supervisor=meu_sup,
+                            id_gerente=meu_ger,
+                            cliente=nome_cli,
+                            adm=regra['administradora'],
+                            produto=produto_sel,
+                            credito=credito_escolhido,
+                            prazo=prazo_escolhido,
+                            taxa_adm=taxa_adm_escolhida
+                        )
+                        if ok: st.success(msg)
+                        else: st.error(msg)
+                    else:
+                        st.error("O Nome do Cliente é obrigatório.")
 
     # =========================================================================
     # --- ABA: MINHAS PROPOSTAS (A Gaveta do Vendedor) ---
@@ -1604,35 +1674,31 @@ def main():
                             
                         # Formulário embutido para completar a cota
                         with c2:
-                            st.markdown("**Completar Informações da Venda**")
-                            # Usa chaves únicas para não dar erro no Streamlit
-                            input_grupo = st.text_input("Número do Grupo *", key=f"g_{index}")
-                            input_cota = st.text_input("Número da Cota *", key=f"c_{index}")
-                            # --- NOVO: CAMPO DE DATA DA PRIMEIRA PARCELA ---
-                            input_data = st.date_input("Data da 1ª Parcela *", format="DD/MM/YYYY", key=f"d_{index}")
+                            input_grupo = st.text_input("Grupo *", key=f"g_{index}")
+                            input_cota = st.text_input("Cota *", key=f"c_{index}")
+                            
+                            c_dt1, c_dt2 = st.columns(2)
+                            input_data = c_dt1.date_input("Data 1ª Parcela *", format="DD/MM/YYYY", key=f"d_{index}")
+                            input_dia_venc = c_dt2.number_input("Dia de Vencimento *", min_value=1, max_value=31, value=15, step=1, key=f"v_{index}", help="Dia do vencimento mensal regular das parcelas do consórcio.")
                             
                         with c3:
-                            st.write("") # Espaçamento
+                            st.write("") 
                             st.write("")
-                            if st.button("🚀 Enviar para Backoffice", key=f"btn_env_{index}", type="primary", use_container_width=True):
-                                if input_grupo and input_cota and input_data:
-                                    # Formata a data para texto (YYYY-MM-DD) antes de mandar pro SQL
+                            if st.button("🚀 Enviar", key=f"btn_env_{index}", type="primary", use_container_width=True):
+                                if input_grupo and input_cota and input_data and input_dia_venc:
                                     data_formatada = input_data.strftime("%Y-%m-%d")
-                                    
                                     ok, msg = backend.completar_e_enviar_aprovacao(
                                         row['Data_Solicitacao'], 
                                         row['cliente'], 
                                         input_grupo, 
-                                        input_cota,
-                                        data_formatada
+                                        input_cota, 
+                                        data_formatada,
+                                        input_dia_venc # <--- ENVIANDO A NOVA INFO
                                     )
-                                    if ok:
-                                        st.success(msg)
-                                        st.rerun()
-                                    else:
-                                        st.error(msg)
+                                    if ok: st.success(msg); st.rerun()
+                                    else: st.error(msg)
                                 else:
-                                    st.error("Preencha Grupo, Cota e a Data da 1ª Parcela!")
+                                    st.warning("Preencha todos os campos antes de enviar.")
     
     # =========================================================================
     # --- ABA: FILA DE APROVAÇÕES (Apenas Master/Admin) ---
@@ -1690,22 +1756,43 @@ def main():
                         
                         with c_dados:
                             st.markdown(f"#### 📦 {row['cliente']}")
-                            st.write(f"**Crédito:** R$ {row['valor_credito']:,.2f} | **Produto:** {row['tipo_cota']}")
+                            st.caption(f"Solicitado em: {row.get('Data_Solicitacao', '-')}")
                             
-                            # --- NOVO: BOTÃO DE VER MAIS DETALHES ---
-                            # Usa o popover para abrir as informações sem tirar o usuário da tela
-                            with st.popover("🔍 Ver mais detalhes"):
-                                st.markdown("##### Detalhamento da Operação")
-                                st.write(f"**Data da Simulação:** {row['Data_Solicitacao']}")
-                                st.write(f"**Administradora:** {row['administradora']}")
-                                st.write(f"**Produto/Regra:** {row['tipo_cota']}")
-                                st.write(f"**Valor do Crédito:** R$ {row['valor_credito']:,.2f}")
+                            with st.popover("🔍 Ver detalhes completos da venda"):
+                                c_det1, c_det2 = st.columns(2)
+                                
+                                with c_det1:
+                                    st.markdown("🏢 **Dados do Consórcio**")
+                                    st.write(f"**Administradora:** {row.get('administradora', '-')}")
+                                    st.write(f"**Produto:** {row.get('tipo_cota', '-')}")
+                                    
+                                    credito = float(row.get('valor_credito', 0))
+                                    st.write(f"**Crédito:** R$ {credito:,.2f}")
+                                    st.write(f"**Prazo:** {row.get('prazo', '-')} meses")
+                                    st.write(f"**Taxa ADM:** {row.get('taxa_adm', '-')} %")
+                                    
+                                with c_det2:
+                                    st.markdown("📅 **Faturamento e Cobrança**")
+                                    st.write(f"**Grupo / Cota:** {row.get('grupo', '-')} / {row.get('cota', '-')}")
+                                    
+                                    # Tratamento para garantir que a data apareça no padrão brasileiro
+                                    dt_1a = row.get('data_primeira_parcela', '')
+                                    if pd.notna(dt_1a) and dt_1a != '':
+                                        try: dt_1a = pd.to_datetime(dt_1a).strftime('%d/%m/%Y')
+                                        except: pass
+                                    
+                                    st.write(f"**Data da 1ª Parcela:** {dt_1a}")
+                                    st.write(f"**Venc. Regular do Grupo:** Todo dia {row.get('dia_vencimento', '-')}")
+                                    
                                 st.divider()
-                                st.write(f"**Vendedor Solicitante (ID):** {row['id_vendedor']}")
-                                if pd.notnull(row['id_gerente']) and row['id_gerente'] != "":
-                                    st.write(f"**Gerente Vinculado (ID):** {row['id_gerente']}")
-                                else:
-                                    st.write("**Gerente Vinculado:** Nenhum")
+                                st.markdown("👥 **Hierarquia da Operação (IDs)**")
+                                
+                                # Formatação de exibição se o campo for vazio/None
+                                v_id = row.get('id_vendedor') if row.get('id_vendedor') else "Sem Vendedor"
+                                s_id = row.get('id_supervisor') if row.get('id_supervisor') else "Isento"
+                                g_id = row.get('id_gerente') if row.get('id_gerente') else "Isento"
+                                
+                                st.info(f"**Vendedor:** {v_id} &nbsp; | &nbsp; **Supervisor:** {s_id} &nbsp; | &nbsp; **Gerente:** {g_id}")
                                 
                         with c_botoes:
                             key_aprov = f"btn_aprov_{index}"
