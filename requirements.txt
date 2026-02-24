@@ -5,3 +5,6 @@ xlsxwriter
 sqlalchemy
 mysql-connector-python
 python-dateutil
+plotly
+passlib
+bcrypt

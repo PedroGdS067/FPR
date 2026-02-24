@@ -7,9 +7,9 @@ from dateutil.relativedelta import relativedelta
 import hashlib
 from database import engine, SessionLocal
 from models import Lancamento, Usuario, Cliente, RegraComissao
+from passlib.hash import bcrypt
 
 
-# --- MAPEAMENTO DE COLUNAS (SQL -> APP) ---
 # --- MAPEAMENTO DE COLUNAS (SQL -> APP) ---
 MAPA_SQL_APP = {
     'id_lancamento': 'ID_Lancamento', 'id_venda': 'ID_Venda', 'valor_cliente': 'Valor_Cliente',
@@ -33,10 +33,15 @@ def limpar_id(val):
     return str(val).strip().replace('.0', '')
 
 def gerar_hash(senha):
-    return hashlib.sha256(str(senha).encode()).hexdigest()
+    # O bcrypt cria automaticamente o "salt" e encripta a palavra-passe
+    return bcrypt.hash(str(senha))
 
-def realizar_backup():
-    pass 
+def verificar_hash(senha_digitada, hash_armazenado):
+    # O bcrypt verifica se a palavra-passe em texto limpo corresponde ao hash seguro do banco
+    try:
+        return bcrypt.verify(str(senha_digitada), str(hash_armazenado))
+    except:
+        return False
 
 # --- LEITURA COM LIMPEZA PARA OS FILTROS ---
 @st.cache_data(ttl=300, show_spinner=False) # Mantém na memória por 5 minutos (300 segundos)
@@ -133,9 +138,9 @@ def carregar_meus_rascunhos(id_vendedor):
     session = SessionLocal()
     try:
         engine = session.get_bind()
-        # Busca apenas os rascunhos do vendedor que está logado
-        query = f"SELECT * FROM vendas_pendentes WHERE status_aprovacao = 'Rascunho' AND id_vendedor = '{id_vendedor}'"
-        return pd.read_sql(query, con=engine)
+        # Uso de query parametrizada para evitar injeção de SQL (Hacker)
+        query = text("SELECT * FROM vendas_pendentes WHERE status_aprovacao = 'Rascunho' AND id_vendedor = :id")
+        return pd.read_sql(query, con=engine, params={"id": id_vendedor})
     except:
         return pd.DataFrame()
     finally:
@@ -641,6 +646,7 @@ def processar_cancelamento_inteligente(df):
                 l.status_pgto_cliente = 'Cancelado'
                 l.receber_administradora = 0.0
                 l.pagar_vendedor = 0.0
+                l.pagar_supervisor = 0.0
                 l.pagar_gerente = 0.0
                 l.liquido_caixa = 0.0
                 if hasattr(l, 'valor_cliente'):
@@ -691,10 +697,12 @@ def processar_cancelamento_inteligente(df):
                             receber_administradora=valor_multa,
                             pagar_vendedor=0,
                             pagar_gerente=0,
+                            pagar_supervisor=0,
                             liquido_caixa=valor_multa,
                             status_recebimento='Estorno',
                             status_pgto_cliente='Estorno',
                             status_pgto_vendedor='Isento',
+                            status_pgto_supervisor='Isento',
                             status_pgto_gerente='Isento'
                         )
                         session.add(estorno_obj)
@@ -924,7 +932,7 @@ def alterar_senha_usuario(id_user, nova_senha):
     finally:
         session.close()
 
-def atualizar_vinculo_usuario(id_u, id_sup, id_ger):
+def atualizar_vinculo_usuario(id_u, id_sup, id_ger, tv, ts, tg):
     session = SessionLocal()
     try:
         usuario = session.query(Usuario).filter(Usuario.id_usuario == str(id_u)).first()
@@ -935,30 +943,32 @@ def atualizar_vinculo_usuario(id_u, id_sup, id_ger):
         id_ger = limpar_id(id_ger)
         
         # --- LÓGICA DE AUTO-VINCULAÇÃO (CASCATA PARA CIMA) ---
-        # Se escolheu um novo supervisor, herda o gerente dele
         if id_sup:
             supervisor_banco = session.query(Usuario).filter(Usuario.id_usuario == id_sup).first()
             if supervisor_banco and supervisor_banco.id_gerente:
                 id_ger = supervisor_banco.id_gerente
                 
-        # Atualiza os dados do usuário alvo
+        # Atualiza os Vínculos
         usuario.id_supervisor = id_sup
         usuario.id_gerente = id_ger
         
+        # --- ATUALIZA AS TAXAS DE COMISSÃO ---
+        usuario.taxa_vendedor = float(tv)
+        usuario.taxa_supervisor = float(ts)
+        usuario.taxa_gerencia = float(tg)
+        
         # --- LÓGICA DE AUTO-VINCULAÇÃO (CASCATA PARA BAIXO) ---
-        # Se o usuário que mudou de equipe for um Supervisor, 
-        # atualiza automaticamente o Gerente de todos os vendedores que estão abaixo dele!
         if usuario.tipo_acesso == 'Supervisor':
             vendedores_abaixo = session.query(Usuario).filter(Usuario.id_supervisor == str(id_u)).all()
             for vend in vendedores_abaixo:
-                vend.id_gerente = id_ger # Repassa o novo gerente para a base
+                vend.id_gerente = id_ger 
                 
         session.commit()
         st.cache_data.clear()
-        return True, f"✅ Vínculos de {usuario.nome_completo} atualizados com sucesso!"
+        return True, f"✅ Cadastro de {usuario.nome_completo} atualizado com sucesso!"
     except Exception as e: 
         session.rollback()
-        return False, f"Erro ao atualizar vínculo: {e}"
+        return False, f"Erro ao atualizar: {e}"
     finally: 
         session.close()
 

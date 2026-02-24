@@ -3,6 +3,7 @@ import pandas as pd
 import time
 import backend
 import io
+import plotly.express as px
 
 # Configuração da Página
 st.set_page_config(page_title="FPR Consórcios", page_icon="💰", layout="wide")
@@ -74,9 +75,14 @@ st.markdown("""
 def verificar_login(u, s):
     df = backend.carregar_usuarios_df()
     m = df[df['username'] == u.strip()]
+    
     if not m.empty:
-        if m.iloc[0]['password_hash'] == backend.gerar_hash(s): 
+        hash_banco = m.iloc[0]['password_hash']
+        
+        # Função de verificação segura do Bcrypt
+        if backend.verificar_hash(s, hash_banco): 
             return True, m.iloc[0]
+            
     return False, None
 
 def tela_login():
@@ -110,7 +116,6 @@ def tela_login():
                         st.error("❌ Usuário ou senha inválidos.")
                 else:
                     st.warning("Preencha todos os campos.")
-
 
 # =========================================================================
 # FUNÇÃO PRINCIPAL E SIDEBAR
@@ -252,36 +257,48 @@ def main():
 
             # --- FILTROS AVANÇADOS ---
             with st.expander("🔍 Filtros do Painel", expanded=False):
-                st.markdown("**Filtros de Perfil e Venda**")
-                c1, c2, c3, c4 = st.columns(4)
+                st.markdown("**Filtros de Negócio e Hierarquia**")
+                
+                # Primeira linha de filtros
+                c1, c2, c3 = st.columns(3)
                 f_mes = c1.multiselect("Mês Vencimento", sorted(dfv['Mes_Referencia'].dropna().unique()))
                 f_adm = c2.multiselect("Administradora", sorted(dfv['Administradora'].unique()))
                 f_cli = c3.multiselect("Cliente", sorted(dfv['Cliente'].unique()))
                 
-                # Se for Master, mostra filtro de vendedor. Se for vendedor/gerente, também mostra para ele filtrar o próprio time.
+                # Segunda linha de filtros (Hierarquia)
+                c4, c5, c6 = st.columns(3)
                 f_vend = c4.multiselect("Vendedor", sorted(dfv['Vendedor'].unique()))
+                f_sup = c5.multiselect("Supervisor", sorted(dfv['Supervisor'].unique()))
+                f_ger = c6.multiselect("Gerente", sorted(dfv['Gerente'].unique()))
                 
                 st.markdown("**Filtros de Status (Pagamentos e Recebimentos)**")
-                c5, c6, c7, c8 = st.columns(4)
-                f_stat_adm = c5.multiselect("Status Admin (FPR)", sorted(dfv['Status_Recebimento'].unique()))
-                f_stat_cli = c6.multiselect("Status Cliente (Boleto)", sorted(dfv['Status_Pgto_Cliente'].unique()))
+                c7, c8, c9, c10, c11 = st.columns(5)
+                f_stat_adm = c7.multiselect("Admin (FPR)", sorted(dfv['Status_Recebimento'].unique()), help="Status de Recebimento da FPR")
+                f_stat_cli = c8.multiselect("Cliente (Boleto)", sorted(dfv['Status_Pgto_Cliente'].unique()), help="Status do boleto do cliente")
                 
-                # Campos dinâmicos dependendo das colunas existentes
+                # Filtros de Comissões dinâmicos
                 f_stat_vend = []
+                f_stat_sup = []
                 f_stat_ger = []
-                if 'Status_Pgto_Vendedor' in dfv.columns:
-                    f_stat_vend = c7.multiselect("Status Repasse Vendedor", sorted(dfv['Status_Pgto_Vendedor'].unique()))
-                if 'Status_Pgto_Gerente' in dfv.columns:
-                    f_stat_ger = c8.multiselect("Status Repasse Gerente", sorted(dfv['Status_Pgto_Gerente'].unique()))
                 
-            # Aplica filtros
+                if 'Status_Pgto_Vendedor' in dfv.columns:
+                    f_stat_vend = c9.multiselect("Repasse Vend.", sorted(dfv['Status_Pgto_Vendedor'].unique()), help="Status de pagamento da comissão do Vendedor")
+                if 'Status_Pgto_Supervisor' in dfv.columns:
+                    f_stat_sup = c10.multiselect("Repasse Sup.", sorted(dfv['Status_Pgto_Supervisor'].unique()), help="Status de pagamento do bônus do Supervisor")
+                if 'Status_Pgto_Gerente' in dfv.columns:
+                    f_stat_ger = c11.multiselect("Repasse Ger.", sorted(dfv['Status_Pgto_Gerente'].unique()), help="Status de pagamento do bônus do Gerente")
+                
+            # Aplica todos os filtros ao DataFrame
             if f_mes: dfv = dfv[dfv['Mes_Referencia'].isin(f_mes)]
             if f_adm: dfv = dfv[dfv['Administradora'].isin(f_adm)]
             if f_cli: dfv = dfv[dfv['Cliente'].isin(f_cli)]
             if f_vend: dfv = dfv[dfv['Vendedor'].isin(f_vend)]
+            if f_sup: dfv = dfv[dfv['Supervisor'].isin(f_sup)]
+            if f_ger: dfv = dfv[dfv['Gerente'].isin(f_ger)]
             if f_stat_adm: dfv = dfv[dfv['Status_Recebimento'].isin(f_stat_adm)]
             if f_stat_cli: dfv = dfv[dfv['Status_Pgto_Cliente'].isin(f_stat_cli)]
             if f_stat_vend: dfv = dfv[dfv['Status_Pgto_Vendedor'].isin(f_stat_vend)]
+            if f_stat_sup: dfv = dfv[dfv['Status_Pgto_Supervisor'].isin(f_stat_sup)]
             if f_stat_ger: dfv = dfv[dfv['Status_Pgto_Gerente'].isin(f_stat_ger)]
             
             # --- MÉTRICAS (KPIs) ---
@@ -304,33 +321,92 @@ def main():
 
             st.divider()
 
-            # --- GRÁFICOS ---
+            # --- GRÁFICOS INTERATIVOS COM PLOTLY ---
             if not dfv.empty:
                 st.markdown("### 📊 Análise de Desempenho")
+                
+                # --- PRIMEIRA LINHA DE GRÁFICOS ---
                 g1, g2 = st.columns(2)
                 
                 with g1:
                     st.caption("Evolução Mensal (Líquido/Comissão)")
-                    
                     df_grafico = dfv.dropna(subset=['Data_Previsao']).copy()
                     if not df_grafico.empty:
-                        # O truque definitivo: Formato 'YYYY-MM' (Ex: 2026-01)
-                        # Sendo texto, as barras ficam grossas. Como o ano vem antes, a ordem fica perfeita!
-                        df_grafico['Ano_Mes'] = df_grafico['Data_Previsao'].dt.strftime('%Y-%m')
+                        df_grafico['Ano_Mes_Sort'] = df_grafico['Data_Previsao'].dt.strftime('%Y-%m') 
+                        df_grafico['Mes_Label'] = df_grafico['Data_Previsao'].dt.strftime('%m/%Y')
                         
-                        # Agrupa pela nova coluna
-                        agrupamento = df_grafico.groupby('Ano_Mes')['Minha_Comissao'].sum()
+                        df_agg = df_grafico.groupby(['Ano_Mes_Sort', 'Mes_Label'], as_index=False)['Minha_Comissao'].sum()
+                        df_agg = df_agg.sort_values('Ano_Mes_Sort')
                         
-                        st.bar_chart(agrupamento, color="#ff4b4b")
+                        df_agg['Texto'] = df_agg['Minha_Comissao'].apply(lambda x: f"R$ {x:,.2f}".replace(',','X').replace('.',',').replace('X','.'))
+                        
+                        fig1 = px.bar(
+                            df_agg, x='Mes_Label', y='Minha_Comissao', text='Texto',
+                            labels={'Mes_Label': '', 'Minha_Comissao': 'Valor (R$)'},
+                            color_discrete_sequence=['#ff4b4b']
+                        )
+                        fig1.update_traces(textposition='outside', cliponaxis=False)
+                        fig1.update_layout(margin=dict(l=0, r=0, t=20, b=0), xaxis_title=None, yaxis_title=None)
+                        st.plotly_chart(fig1, use_container_width=True)
                     else:
                         st.info("Nenhuma data válida para exibir no gráfico.")
                 
                 with g2:
                     if 'Administradora' in dfv.columns:
-                        st.caption("Receita por Administradora")
-                        # O sort_values(ascending=False) garante que a administradora que paga mais fica em primeiro
-                        admin_chart = dfv.groupby('Administradora')['Minha_Comissao'].sum().sort_values(ascending=False)
-                        st.bar_chart(admin_chart, color="#4b8bff")
+                        st.caption("Participação por Administradora")
+                        df_adm = dfv.groupby('Administradora', as_index=False)['Minha_Comissao'].sum()
+                        df_adm = df_adm[df_adm['Minha_Comissao'] > 0] 
+                        
+                        if not df_adm.empty:
+                            fig2 = px.pie(
+                                df_adm, values='Minha_Comissao', names='Administradora', 
+                                hole=0.45, 
+                                color_discrete_sequence=px.colors.qualitative.Pastel
+                            )
+                            fig2.update_traces(textposition='inside', textinfo='percent+label')
+                            fig2.update_layout(margin=dict(l=0, r=0, t=20, b=0), showlegend=False)
+                            st.plotly_chart(fig2, use_container_width=True)
+                        else:
+                            st.info("Nenhum valor faturado para exibir.")
+                
+                # --- SEGUNDA LINHA DE GRÁFICOS (RANKING) ---
+                # Oculta o ranking para o Vendedor, já que ele só enxerga a si mesmo
+                if cargo_atual != 'Vendedor':
+                    st.write("") # Espaçamento
+                    
+                    titulo_ranking = "🏆 Top 5 Vendedores (Ranking Geral)" if cargo_atual in ['Master', 'Administrativo', 'Financeiro'] else "🏆 Top 5 Vendedores da Minha Equipe"
+                    st.caption(titulo_ranking)
+                    
+                    # Agrupa a comissão por vendedor, tirando os vazios
+                    df_top = dfv.groupby('Vendedor', as_index=False)['Minha_Comissao'].sum()
+                    df_top = df_top[(df_top['Minha_Comissao'] > 0) & (df_top['Vendedor'] != '')]
+                    
+                    # Pega apenas os 5 melhores e ordena para o gráfico horizontal ficar do maior pro menor
+                    df_top = df_top.sort_values('Minha_Comissao', ascending=False).head(5)
+                    
+                    if not df_top.empty:
+                        df_top['Texto'] = df_top['Minha_Comissao'].apply(lambda x: f"R$ {x:,.2f}".replace(',','X').replace('.',',').replace('X','.'))
+                        
+                        fig3 = px.bar(
+                            df_top, 
+                            x='Minha_Comissao', 
+                            y='Vendedor', 
+                            orientation='h', # Transforma a barra em horizontal
+                            text='Texto',
+                            labels={'Minha_Comissao': 'Valor (R$)', 'Vendedor': ''},
+                            color_discrete_sequence=['#ff4b4b']
+                        )
+                        
+                        fig3.update_traces(textposition='auto')
+                        fig3.update_layout(
+                            yaxis={'categoryorder':'total ascending'}, 
+                            margin=dict(l=0, r=0, t=10, b=0), 
+                            xaxis_title=None,
+                            height=250 # Mantém o gráfico mais fino
+                        )
+                        st.plotly_chart(fig3, use_container_width=True)
+                    else:
+                        st.info("Ranking indisponível no momento.")
             
             st.divider()
             
@@ -511,7 +587,7 @@ def main():
                             return f'color: {color}; font-weight: bold'
 
                         st.dataframe(
-                            logs.style.applymap(color_status_entuba, subset=['Status']), 
+                            logs.style.map(color_status_entuba, subset=['Status']), 
                             use_container_width=True,
                             hide_index=True
                         )
@@ -587,7 +663,7 @@ def main():
                         # Renderiza a tabela
                         col_status = 'Status_Processamento' if 'Status_Processamento' in logs.columns else 'Status'
                         st.dataframe(
-                            logs.style.applymap(color_conciliacao, subset=[col_status]), 
+                            logs.style.map(color_conciliacao, subset=[col_status]), 
                             use_container_width=True,
                             hide_index=True
                         )
@@ -658,7 +734,7 @@ def main():
                             return f'color: {color}; font-weight: bold'
 
                         st.dataframe(
-                            logs.style.applymap(color_status, subset=['Status']), 
+                            logs.style.map(color_status, subset=['Status']), 
                             use_container_width=True,
                             hide_index=True
                         )
@@ -698,7 +774,7 @@ def main():
                     st.warning("Nenhum usuário encontrado.")
 
             with cf:
-                tab_n, tab_v, tab_s, tab_e = st.tabs(["➕ Novo Usuário", "🔗 Editar Vínculo", "🔑 Resetar Senha", "🗑️ Excluir"])
+                tab_n, tab_v, tab_s, tab_e = st.tabs(["➕ Novo Usuário", "🔗 Editar Perfil", "🔑 Resetar Senha", "🗑️ Excluir"])
                 
                 # --- SUB-ABA: NOVO USUÁRIO ---
                 with tab_n:
@@ -740,26 +816,47 @@ def main():
                                 else: st.error(msg)
                             else: st.warning("Por favor, preencha todos os campos obrigatórios.")
 
-                # --- SUB-ABA: EDITAR VÍNCULOS ---
+                # --- SUB-ABA: EDITAR PERFIL (VÍNCULOS E TAXAS) ---
                 with tab_v:
-                    st.markdown("**Transferência de Equipe (Hierarquia)**")
-                    st.info("Altere o Supervisor ou Gerente de um colaborador. O sistema ajustará as futuras vendas automaticamente.")
+                    st.markdown("**Editar Hierarquia e Comissões**")
+                    st.info("Altere o Supervisor, Gerente ou as taxas de comissionamento. O sistema já pré-preenche com os dados atuais do colaborador.")
                     
                     if not dfu.empty:
-                        # Seleciona qual usuário vai mudar de equipe
+                        # 1. Seleciona o usuário
                         user_edit = st.selectbox("Selecione o Colaborador", dfu.apply(lambda x: f"{x['id_usuario']} - {x['nome_completo']} ({x['tipo_acesso']})", axis=1), key='s_edit_v')
                         
-                        # Recria as listas de líderes disponíveis
+                        id_alvo_v = user_edit.split(' - ')[0]
+                        
+                        # 2. Puxa os dados atuais do usuário selecionado para pré-preencher a tela
+                        dados_atuais = dfu[dfu['id_usuario'].astype(str) == str(id_alvo_v)].iloc[0]
+                        
+                        # Listas de líderes disponíveis
                         lista_sup_edit = [""] + dfu[dfu['tipo_acesso'] == 'Supervisor']['id_usuario'].tolist() if not dfu.empty else [""]
                         lista_ger_edit = [""] + dfu[dfu['tipo_acesso'] == 'Gerente']['id_usuario'].tolist() if not dfu.empty else [""]
                         
-                        c_v1, c_v2 = st.columns(2)
-                        novo_sup = c_v1.selectbox("Novo Supervisor (ID)", lista_sup_edit, key='n_sup', help="Opcional")
-                        novo_ger = c_v2.selectbox("Novo Gerente (ID)", lista_ger_edit, key='n_ger', help="Deixe vazio se escolher um supervisor.")
+                        # Descobre a posição atual do chefe na lista para deixar selecionado
+                        val_sup_atual = dados_atuais.get('id_supervisor', '')
+                        val_ger_atual = dados_atuais.get('id_gerente', '')
                         
-                        if st.button("🔄 Atualizar Vínculos", type="primary", use_container_width=True):
-                            id_alvo_v = user_edit.split(' - ')[0]
-                            ok, msg = backend.atualizar_vinculo_usuario(id_alvo_v, novo_sup, novo_ger)
+                        idx_sup = lista_sup_edit.index(val_sup_atual) if val_sup_atual in lista_sup_edit else 0
+                        idx_ger = lista_ger_edit.index(val_ger_atual) if val_ger_atual in lista_ger_edit else 0
+                        
+                        # --- FORMULÁRIO DE HIERARQUIA ---
+                        st.markdown("**Vínculos de Equipe**")
+                        c_v1, c_v2 = st.columns(2)
+                        novo_sup = c_v1.selectbox("Supervisor (ID)", lista_sup_edit, index=idx_sup, key='n_sup', help="Deixe em branco se for isento.")
+                        novo_ger = c_v2.selectbox("Gerente (ID)", lista_ger_edit, index=idx_ger, key='n_ger', help="Deixe vazio se escolher um supervisor.")
+                        
+                        # --- FORMULÁRIO DE TAXAS ---
+                        st.markdown("**Taxas de Comissionamento**")
+                        c_t1, c_t2, c_t3 = st.columns(3)
+                        nova_tv = c_t1.number_input("Tx Vend (Ex: 0.20)", value=float(dados_atuais.get('taxa_vendedor', 0.20)), step=0.01, key='n_tv')
+                        nova_ts = c_t2.number_input("Tx Sup (Ex: 0.10)", value=float(dados_atuais.get('taxa_supervisor', 0.10)), step=0.01, key='n_ts')
+                        nova_tg = c_t3.number_input("Tx Ger (Ex: 0.10)", value=float(dados_atuais.get('taxa_gerencia', 0.10)), step=0.01, key='n_tg')
+                        
+                        st.write("")
+                        if st.button("🔄 Atualizar Cadastro", type="primary", use_container_width=True):
+                            ok, msg = backend.atualizar_vinculo_usuario(id_alvo_v, novo_sup, novo_ger, nova_tv, nova_ts, nova_tg)
                             if ok:
                                 st.success(msg)
                                 time.sleep(1)
@@ -1097,7 +1194,7 @@ def main():
                                 elif 'ignorado' in val_str: color = 'orange'
                                 return f'color: {color}; font-weight: bold'
                             
-                            st.dataframe(log.style.applymap(color_edicao, subset=['Status']), use_container_width=True, hide_index=True)
+                            st.dataframe(log.style.map(color_edicao, subset=['Status']), use_container_width=True, hide_index=True)
 
             # --- SUB-ABA: EXCLUSÃO ---
             with t2:
@@ -1143,7 +1240,7 @@ def main():
                                 elif 'ignorado' in val_str or 'aviso' in val_str: color = 'orange'
                                 return f'color: {color}; font-weight: bold'
                             
-                            st.dataframe(log.style.applymap(color_exclusao, subset=['Status']), use_container_width=True, hide_index=True)
+                            st.dataframe(log.style.map(color_exclusao, subset=['Status']), use_container_width=True, hide_index=True)
 
             # --- SUB-ABA: BACKUP (NOVO) ---
             with t3:
@@ -1174,6 +1271,7 @@ def main():
                                 backend.carregar_clientes().to_excel(writer, index=False, sheet_name='Clientes')
                                 backend.carregar_regras_df().to_excel(writer, index=False, sheet_name='Regras')
                                 backend.carregar_usuarios_df().to_excel(writer, index=False, sheet_name='Usuarios')
+                                backend.carregar_aprovacoes_pendentes().to_excel(writer, index=False, sheet_name='Usuarios')
                             
                             # Salva o arquivo na sessão para liberar o botão de download
                             st.session_state['arquivo_backup'] = buffer_bkp.getvalue()
@@ -1679,8 +1777,8 @@ def main():
                             
                             c_dt1, c_dt2 = st.columns(2)
                             input_data = c_dt1.date_input("Data 1ª Parcela *", format="DD/MM/YYYY", key=f"d_{index}")
-                            input_dia_venc = c_dt2.number_input("Dia de Vencimento *", min_value=1, max_value=31, value=15, step=1, key=f"v_{index}", help="Dia do vencimento mensal regular das parcelas do consórcio.")
-                            
+                            input_dia_venc = c_dt2.number_input("Dia de Vencimento (Corte) *", min_value=1, max_value=31, value=15, step=1, key=f"v_{index}", help="Data de corte/assembleia do grupo. Se a adesão for paga após este dia, a 2ª parcela pulará para M+2.")                            
+                        
                         with c3:
                             st.write("") 
                             st.write("")
@@ -1728,7 +1826,7 @@ def main():
                             return f'color: {color}; font-weight: bold'
                             
                         if 'Status' in log_df.columns:
-                            st.dataframe(log_df.style.applymap(color_status_entuba, subset=['Status']), use_container_width=True, hide_index=True)
+                            st.dataframe(log_df.style.map(color_status_entuba, subset=['Status']), use_container_width=True, hide_index=True)
                         else:
                             st.dataframe(log_df, use_container_width=True, hide_index=True)
                 
@@ -1782,7 +1880,7 @@ def main():
                                         except: pass
                                     
                                     st.write(f"**Data da 1ª Parcela:** {dt_1a}")
-                                    st.write(f"**Venc. Regular do Grupo:** Todo dia {row.get('dia_vencimento', '-')}")
+                                    st.write(f"**Data de Corte do Grupo:** Dia {row.get('dia_vencimento', '-')}")
                                     
                                 st.divider()
                                 st.markdown("👥 **Hierarquia da Operação (IDs)**")
