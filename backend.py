@@ -33,16 +33,18 @@ def limpar_id(val):
     return str(val).strip().replace('.0', '')
 
 def gerar_hash(senha):
-    # O bcrypt cria automaticamente o "salt" e encripta a palavra-passe
-    return bcrypt.hash(str(senha))
+    # Corta a string no 72º caractere para respeitar o limite do Bcrypt
+    senha_segura = str(senha)[:72]
+    return bcrypt.hash(senha_segura)
 
 def verificar_hash(senha_digitada, hash_armazenado):
-    # O bcrypt verifica se a palavra-passe em texto limpo corresponde ao hash seguro do banco
     try:
-        return bcrypt.verify(str(senha_digitada), str(hash_armazenado))
-    except:
+        # Aplica o mesmo corte na hora de comparar
+        senha_segura = str(senha_digitada)[:72]
+        return bcrypt.verify(senha_segura, str(hash_armazenado))
+    except Exception as e:
         return False
-
+    
 # --- LEITURA COM LIMPEZA PARA OS FILTROS ---
 @st.cache_data(ttl=300, show_spinner=False) # Mantém na memória por 5 minutos (300 segundos)
 def carregar_dados():
