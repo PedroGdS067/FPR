@@ -90,17 +90,6 @@ def tela_login():
     st.markdown("<br><br><br>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1, 1.2, 1]) # Coluna central levemente mais larga
     with c2:
-        # --- BOTÃO DE EMERGÊNCIA (APAGUE DEPOIS) ---
-        if st.button("🚨 Criar Usuário Admin", use_container_width=True):
-            import database
-            database.init_db() 
-            ok, msg = backend.adicionar_novo_usuario(
-                id_u="1", nome="Master", user="admin", senha="123", 
-                tipo="Master", tv=0, ts=0, tg=0, id_sup="", id_ger=""
-            )
-            if ok: st.success("✅ Tabelas recriadas e Usuário admin gerado! Senha: 123")
-            else: st.error(msg)
-        # ------------------------------------------
         st.markdown("<h1 style='text-align: center; color: #ff4b4b;'>FPR Consórcios</h1>", unsafe_allow_html=True)
         st.markdown("<p style='text-align: center; color: gray; margin-bottom: 30px;'>Acesso Restrito ao Sistema de Gestão</p>", unsafe_allow_html=True)
         
