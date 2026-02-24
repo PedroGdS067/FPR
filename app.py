@@ -79,7 +79,7 @@ def verificar_login(u, s):
     if not m.empty:
         hash_banco = m.iloc[0]['password_hash']
         
-        # Função de verificação segura do Bcrypt
+        # Usa a nossa função de verificação segura
         if backend.verificar_hash(s, hash_banco): 
             return True, m.iloc[0]
             

@@ -7,7 +7,7 @@ from dateutil.relativedelta import relativedelta
 import hashlib
 from database import engine, SessionLocal
 from models import Lancamento, Usuario, Cliente, RegraComissao
-from passlib.hash import bcrypt
+import bcrypt
 
 
 # --- MAPEAMENTO DE COLUNAS (SQL -> APP) ---
@@ -33,18 +33,25 @@ def limpar_id(val):
     return str(val).strip().replace('.0', '')
 
 def gerar_hash(senha):
-    # Corta a string no 72º caractere para respeitar o limite do Bcrypt
-    senha_segura = str(senha)[:72]
-    return bcrypt.hash(senha_segura)
+    # Converte a senha para bytes (necessário para o bcrypt nativo)
+    senha_bytes = str(senha).encode('utf-8')
+    # Corta em 72 bytes para blindar contra o erro da nuvem
+    senha_segura = senha_bytes[:72]
+    # Gera o hash e devolve como string para gravar no MySQL
+    return bcrypt.hashpw(senha_segura, bcrypt.gensalt()).decode('utf-8')
 
 def verificar_hash(senha_digitada, hash_armazenado):
     try:
-        # Aplica o mesmo corte na hora de comparar
-        senha_segura = str(senha_digitada)[:72]
-        return bcrypt.verify(senha_segura, str(hash_armazenado))
+        # Prepara a senha digitada
+        senha_bytes = str(senha_digitada).encode('utf-8')
+        senha_segura = senha_bytes[:72]
+        # Prepara o hash que veio do banco de dados
+        hash_bytes = str(hash_armazenado).encode('utf-8')
+        # Faz a comparação segura nativa
+        return bcrypt.checkpw(senha_segura, hash_bytes)
     except Exception as e:
         return False
-    
+
 # --- LEITURA COM LIMPEZA PARA OS FILTROS ---
 @st.cache_data(ttl=300, show_spinner=False) # Mantém na memória por 5 minutos (300 segundos)
 def carregar_dados():
